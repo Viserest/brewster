@@ -1,6 +1,6 @@
 # brewster
 
-A web browser written in Rust, driven by a single Rust/Lua-flavoured language (name TBD) for structure, style and scripts.
+A web browser written in Rust, driven by a Rust/Lua-like language in ```.cre``` files which create the structures, styles and scripts.
 
 ## Layout
 
@@ -14,9 +14,9 @@ crates/
   engine    lex -> parse -> resolve -> layout in one call
 apps/
   brewster-cli   terminal viewer (ANSI)
-  brewster       GUI viewer (placeholder)
+  brewster       GUI viewer
 examples/
-  demo.pseudo
+  demo.cre
 ```
 
 Logic lives in `crates/*`; UI lives in `apps/*`. Only `std` is used (no external dependencies).
