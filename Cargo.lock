@@ -5,7 +5,53 @@ version = 4
 [[package]]
 name = "brewster"
 version = "0.1.0"
+dependencies = [
+ "engine",
+]
+
+[[package]]
+name = "brewster-cli"
+version = "0.1.0"
+dependencies = [
+ "engine",
+]
+
+[[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "layout",
+ "lexer",
+ "parser",
+ "resolver",
+]
+
+[[package]]
+name = "layout"
+version = "0.1.0"
+dependencies = [
+ "resolver",
+ "style",
+]
+
+[[package]]
+name = "lexer"
+version = "0.1.0"
 
 [[package]]
 name = "parser"
+version = "0.1.0"
+dependencies = [
+ "lexer",
+]
+
+[[package]]
+name = "resolver"
+version = "0.1.0"
+dependencies = [
+ "parser",
+]
+
+[[package]]
+name = "style"
 version = "0.1.0"

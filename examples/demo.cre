@@ -1,0 +1,29 @@
+// Reusable style template. Its own children are skipped when extended;
+// only .before / .after content is carried over.
+let body = box
+  .bcolor:#181818
+  .fcolor:white
+  .pad:1,0,1,2
+  .before:box {
+    link https://example.com "Home Page"
+    link https://example.com/projects "Projects Page"
+  }
+  .after:box {
+    p "Copyright &copy; 2026"
+  }
+
+box.extends:body {
+  h1.align-x:middle "Hello, pseudo"
+  p.fcolor:yellow "Yellow text"
+  p.bcolor:black.fcolor:white "Black background, white foreground"
+  pre r#"
+fn main() {
+  print("raw strings keep    spacing")
+}
+"#
+  box.margin:1,0 {
+    input "name" "John Doe"
+    input.protected "password" "hunter2"
+    button "Submit this"
+  }
+}
