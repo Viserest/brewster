@@ -1,46 +1,30 @@
 //! brewster-cli: terminal viewer. All parsing/layout lives in `crates/*`;
-//! this app only reads input and paints rows with ANSI escapes.
+//! this app only handles input, output and terminal interaction.
+//!
+//! - `brewster-cli FILE` on a terminal opens the interactive viewer.
+//! - `--once`, `--plain`, piped output, or stdin input print once and exit.
 
-use engine::{Rgb, Row, render_source, row_text};
+mod print;
+mod tui;
+
+use engine::render_source;
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, IsTerminal, Read};
 
-const USAGE: &str =
-    "usage: brewster-cli [--width N] [--plain] [FILE]\n(reads stdin when FILE is omitted)";
-
-fn paint(row: &Row) -> String {
-    let mut out = String::new();
-    for s in row {
-        if s.text.is_empty() {
-            continue;
-        }
-        let mut codes: Vec<String> = Vec::new();
-        if s.bold {
-            codes.push("1".to_string());
-        }
-        if s.underline {
-            codes.push("4".to_string());
-        }
-        if let Some(Rgb(r, g, b)) = s.fg {
-            codes.push(format!("38;2;{};{};{}", r, g, b));
-        }
-        if let Some(Rgb(r, g, b)) = s.bg {
-            codes.push(format!("48;2;{};{};{}", r, g, b));
-        }
-        if codes.is_empty() {
-            out.push_str(&s.text);
-        } else {
-            out.push_str(&format!("\x1b[{}m{}\x1b[0m", codes.join(";"), s.text));
-        }
-    }
-    out
-}
+const USAGE: &str = "usage: brewster-cli [--once] [--plain] [--width N] [FILE]\n\
+  FILE on a terminal opens the interactive viewer\n\
+  (j/k, arrows, space/b, g/G scroll; r reload; q quit)\n\
+  --once    print once with colors and exit\n\
+  --plain   print once without colors and exit\n\
+  --width N layout width for one-shot output (default 80)\n\
+  stdin is read when FILE is omitted (one-shot)";
 
 fn run() -> Result<(), String> {
     let mut width = 80usize;
     let mut path: Option<String> = None;
     let mut plain = env::var_os("NO_COLOR").is_some();
+    let mut once = false;
     let mut args = env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -50,12 +34,22 @@ fn run() -> Result<(), String> {
                     .parse()
                     .map_err(|_| "--width needs a number".to_string())?;
             }
-            "--plain" => plain = true,
+            "--plain" => {
+                plain = true;
+                once = true;
+            }
+            "--once" => once = true,
             "-h" | "--help" => {
                 println!("{}", USAGE);
                 return Ok(());
             }
             _ => path = Some(a.clone()),
+        }
+    }
+
+    if let Some(p) = &path {
+        if !once && io::stdout().is_terminal() {
+            return tui::run(p);
         }
     }
 
@@ -69,18 +63,8 @@ fn run() -> Result<(), String> {
             s
         }
     };
-
     let rows = render_source(&src, width)?;
-    let mut out = String::new();
-    for row in &rows {
-        if plain {
-            out.push_str(&row_text(row));
-        } else {
-            out.push_str(&paint(row));
-        }
-        out.push('\n');
-    }
-    print!("{}", out);
+    print!("{}", print::render(&rows, plain));
     Ok(())
 }
 

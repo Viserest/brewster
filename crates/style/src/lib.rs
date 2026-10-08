@@ -111,6 +111,18 @@ pub fn spacing(style: &StyleMap, key: &str) -> Result<[usize; 4], String> {
     Ok(sp)
 }
 
+/// Border widths as `[top, right, bottom, left]`, same shorthand as `pad` / `margin`.
+/// Terminal borders are exactly 0 or 1 cell thick.
+pub fn border(style: &StyleMap) -> Result<[usize; 4], String> {
+    let b = spacing(style, "border")?;
+    if b.iter().any(|&n| n > 1) {
+        return Err(
+            "`border` values must be 0 or 1 (a terminal border is one cell thick)".to_string(),
+        );
+    }
+    Ok(b)
+}
+
 pub fn decode(s: &str) -> String {
     s.replace("&copy;", "©")
         .replace("&nbsp;", " ")
@@ -129,6 +141,15 @@ mod tests {
         assert_eq!(parse_color("#fff"), Ok(Rgb(255, 255, 255)));
         assert_eq!(parse_color("#181818"), Ok(Rgb(0x18, 0x18, 0x18)));
         assert!(parse_color("nope").is_err());
+    }
+
+    #[test]
+    fn border_is_zero_or_one() {
+        let mut m = StyleMap::new();
+        m.insert("border".to_string(), vec!["1".to_string(), "0".to_string()]);
+        assert_eq!(border(&m), Ok([0, 1, 0, 1]));
+        m.insert("border".to_string(), vec!["2".to_string()]);
+        assert!(border(&m).is_err());
     }
 
     #[test]

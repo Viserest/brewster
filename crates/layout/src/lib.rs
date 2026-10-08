@@ -2,7 +2,7 @@
 //! Output is renderer-agnostic; apps decide how to paint it.
 
 use resolver::Resolved;
-use style::{Align, decode, first, parse_align, parse_color, spacing};
+use style::{Align, border, decode, first, parse_align, parse_color, spacing};
 
 pub use style::Rgb;
 
@@ -155,6 +155,7 @@ fn layout_node(r: &Resolved, width: usize, ctx: Ctx) -> Result<Vec<Row>, String>
     let st = &r.style;
     let [mt, mr, mb, ml] = spacing(st, "margin")?;
     let [pt, pr, pb, pl] = spacing(st, "pad")?;
+    let [bt, br, bb, bl] = border(st)?;
 
     let fg = match st.get("fcolor") {
         Some(v) => Some(parse_color(first(v)?)?),
@@ -169,7 +170,7 @@ fn layout_node(r: &Resolved, width: usize, ctx: Ctx) -> Result<Vec<Row>, String>
         None => ctx.ax,
     };
 
-    let inner_w = width.saturating_sub(ml + mr + pl + pr).max(1);
+    let inner_w = width.saturating_sub(ml + mr + bl + br + pl + pr).max(1);
     let mut inner: Vec<Row> = Vec::new();
 
     if r.tag == "box" {
@@ -206,6 +207,10 @@ fn layout_node(r: &Resolved, width: usize, ctx: Ctx) -> Result<Vec<Row>, String>
         }
     }
 
+    let border_fg = match st.get("border-color") {
+        Some(v) => Some(parse_color(first(v)?)?),
+        None => fg,
+    };
     let space = |n: usize, bg: Option<Rgb>| Span {
         text: " ".repeat(n),
         fg: None,
@@ -213,14 +218,40 @@ fn layout_node(r: &Resolved, width: usize, ctx: Ctx) -> Result<Vec<Row>, String>
         bold: false,
         underline: false,
     };
+    let edge = |text: String| Span {
+        text,
+        fg: border_fg,
+        bg: ibg,
+        bold: false,
+        underline: false,
+    };
+    // Layers, outside in: margin, border, padding, content.
     let row = |mid: &Row| -> Row {
         let mut line: Row = Vec::new();
         line.push(space(ml, ctx.bg));
+        if bl > 0 {
+            line.push(edge("\u{2502}".to_string()));
+        }
         line.push(space(pl, ibg));
         line.extend(mid.iter().cloned());
         line.push(space(pr, ibg));
+        if br > 0 {
+            line.push(edge("\u{2502}".to_string()));
+        }
         line.push(space(mr, ctx.bg));
         line
+    };
+    // Top or bottom border line, with corners only where a side border meets it.
+    let horizontal = |left: &str, right: &str| -> Row {
+        let mut text = String::new();
+        if bl > 0 {
+            text.push_str(left);
+        }
+        text.push_str(&"\u{2500}".repeat(pl + inner_w + pr));
+        if br > 0 {
+            text.push_str(right);
+        }
+        vec![space(ml, ctx.bg), edge(text), space(mr, ctx.bg)]
     };
     let full: Row = vec![space(width, ctx.bg)];
     let pad_mid: Row = vec![space(inner_w, ibg)];
@@ -228,6 +259,9 @@ fn layout_node(r: &Resolved, width: usize, ctx: Ctx) -> Result<Vec<Row>, String>
     let mut out: Vec<Row> = Vec::new();
     for _ in 0..mt {
         out.push(full.clone());
+    }
+    if bt > 0 {
+        out.push(horizontal("\u{250C}", "\u{2510}"));
     }
     for _ in 0..pt {
         out.push(row(&pad_mid));
@@ -237,6 +271,9 @@ fn layout_node(r: &Resolved, width: usize, ctx: Ctx) -> Result<Vec<Row>, String>
     }
     for _ in 0..pb {
         out.push(row(&pad_mid));
+    }
+    if bb > 0 {
+        out.push(horizontal("\u{2514}", "\u{2518}"));
     }
     for _ in 0..mb {
         out.push(full.clone());
@@ -251,6 +288,45 @@ mod tests {
     #[test]
     fn wraps_words() {
         assert_eq!(wrap("a b c", 3), vec!["a b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn full_border_surrounds_content() {
+        use resolver::Style;
+        let mut style = Style::new();
+        style.insert("border".to_string(), vec!["1".to_string()]);
+        let node = Resolved {
+            tag: "p".to_string(),
+            style,
+            args: vec!["hi".to_string()],
+            children: vec![],
+        };
+        let rows = layout(&node, 6).unwrap();
+        let text: Vec<String> = rows.iter().map(row_text).collect();
+        assert_eq!(
+            text,
+            vec![
+                "\u{250C}\u{2500}\u{2500}\u{2500}\u{2500}\u{2510}".to_string(),
+                "\u{2502}hi  \u{2502}".to_string(),
+                "\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2518}".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn x_only_border_has_no_top_or_bottom() {
+        use resolver::Style;
+        let mut style = Style::new();
+        style.insert("border-x".to_string(), vec!["1".to_string()]);
+        let node = Resolved {
+            tag: "p".to_string(),
+            style,
+            args: vec!["a".to_string()],
+            children: vec![],
+        };
+        let rows = layout(&node, 4).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(row_text(&rows[0]), "\u{2502}a \u{2502}");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Tokenizer for the pseudo language.
+//! Tokenizer for the cre language.
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
@@ -129,10 +129,13 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
                                 Some('"') => s.push('"'),
                                 Some('\\') => s.push('\\'),
                                 Some(o) => {
-                                    return Err(format!("line {}: unknown escape `\\{}`", line, o))
+                                    return Err(format!("line {}: unknown escape `\\{}`", line, o));
                                 }
                                 None => {
-                                    return Err(format!("line {}: unterminated string", start_line))
+                                    return Err(format!(
+                                        "line {}: unterminated string",
+                                        start_line
+                                    ));
                                 }
                             }
                             i += 1;
