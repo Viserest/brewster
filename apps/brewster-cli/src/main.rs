@@ -7,10 +7,11 @@
 mod print;
 mod tui;
 
-use engine::render_source;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
+
+use engine::render_source;
 
 const USAGE: &str = "usage: brewster-cli [--once] [--plain] [--width N] [FILE]\n\
   FILE on a terminal opens the interactive viewer\n\

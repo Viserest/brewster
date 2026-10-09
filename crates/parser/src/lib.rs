@@ -49,6 +49,22 @@ struct Parser {
 }
 
 impl Parser {
+    fn parse_program(mut self) -> Result<Vec<Stmt>, String> {
+        let mut out = Vec::new();
+        while self.peek().is_some() {
+            if self.peek() == Some(&Tok::Let) {
+                self.next();
+                let name = self.expect_ident("a name after `let`")?;
+                self.expect(Tok::Eq, "`=` after the name")?;
+                let node = self.parse_element()?;
+                out.push(Stmt::Let(name, node));
+            } else {
+                out.push(Stmt::Elem(self.parse_element()?));
+            }
+        }
+        Ok(out)
+    }
+
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos).map(|t| &t.tok)
     }
@@ -84,22 +100,6 @@ impl Parser {
             Some(tk) if tk.tok == t => Ok(()),
             _ => Err(format!("line {}: expected {}", line, what)),
         }
-    }
-
-    fn parse_program(mut self) -> Result<Vec<Stmt>, String> {
-        let mut out = Vec::new();
-        while self.peek().is_some() {
-            if self.peek() == Some(&Tok::Let) {
-                self.next();
-                let name = self.expect_ident("a name after `let`")?;
-                self.expect(Tok::Eq, "`=` after the name")?;
-                let node = self.parse_element()?;
-                out.push(Stmt::Let(name, node));
-            } else {
-                out.push(Stmt::Elem(self.parse_element()?));
-            }
-        }
-        Ok(out)
     }
 
     fn parse_values(&mut self) -> Result<Vec<String>, String> {

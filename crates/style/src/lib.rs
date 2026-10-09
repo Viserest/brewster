@@ -123,15 +123,6 @@ pub fn border(style: &StyleMap) -> Result<[usize; 4], String> {
     Ok(b)
 }
 
-pub fn decode(s: &str) -> String {
-    s.replace("&copy;", "©")
-        .replace("&nbsp;", " ")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&amp;", "&")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

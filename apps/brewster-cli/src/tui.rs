@@ -1,5 +1,8 @@
 //! Interactive terminal viewer (crossterm): scrolling, reload, live resize.
 
+use std::fs;
+use std::io::{self, Write};
+
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -13,8 +16,6 @@ use crossterm::{
     },
 };
 use engine::{Rgb, Row, render_source};
-use std::fs;
-use std::io::{self, Write};
 
 fn io_err(e: io::Error) -> String {
     e.to_string()

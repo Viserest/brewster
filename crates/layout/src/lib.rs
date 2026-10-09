@@ -2,9 +2,18 @@
 //! Output is renderer-agnostic; apps decide how to paint it.
 
 use resolver::Resolved;
-use style::{Align, border, decode, first, parse_align, parse_color, spacing};
+use style::{Align, border, first, parse_align, parse_color, spacing};
 
 pub use style::Rgb;
+
+pub fn decode(s: &str) -> String {
+    s.replace("&copy;", "©")
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&")
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Span {

@@ -13,7 +13,7 @@ let body = box
   }
 
 box.extends:body {
-  h1.align-x:middle "Hello, pseudo"
+  h1.align-x:middle "Hello, cre"
   p.fcolor:yellow "Yellow text"
   p.bcolor:black.fcolor:white "Black background, white foreground"
   pre r#"
