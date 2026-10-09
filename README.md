@@ -11,6 +11,7 @@ crates/
   resolver  let / extends / before / after -> fully merged styles
   style     colors, spacing, alignment, entities
   layout    resolved tree -> rows of styled spans (renderer-agnostic)
+  cursor    cursor modes, copy text, input editing
   engine    lex -> parse -> resolve -> layout in one call
 apps/
   brewster-cli   terminal viewer (ANSI)
@@ -24,9 +25,9 @@ Logic lives in `crates/*`; UI lives in `apps/*`. The crates use only `std`; `bre
 ## Run
 
 ```
-cargo run -p brewster-cli -- examples/demo.pseudo               # interactive viewer
-cargo run -p brewster-cli -- --once examples/demo.pseudo        # print once, with colors
-cargo run -p brewster-cli -- --width 60 --plain examples/demo.pseudo
+cargo run -p brewster-cli -- examples/demo.cre               # interactive viewer
+cargo run -p brewster-cli -- --once examples/demo.cre        # print once, with colors
+cargo run -p brewster-cli -- --width 60 --plain examples/demo.cre
 cargo test --workspace
 ```
 
@@ -34,7 +35,9 @@ Requires Rust 1.85+ (edition 2024, resolver 3).
 
 ## Interactive viewer keys
 
-`j`/`k`/arrows scroll, `space`/`b` or PageDown/PageUp page, `g`/`G` or Home/End jump, `r` reload the file, `q`/Esc/Ctrl-C quit. The layout reflows when the terminal is resized.
+Cursor: `j`/`k`/arrows/Tab move, `g`/`G` first/last stop, `m` toggles the mode (`focused` = links, inputs and buttons; `all` = every line). `y`/`c` copies the line under the cursor (link text, button label, input value; sent to the system clipboard via OSC 52). `enter`/`i` edits an input; `p` or Ctrl+V pastes into it (terminal paste also works), Ctrl+C copies its value, Esc/Enter finishes.
+
+View: `space`/`b`, PageDown/PageUp page, `J`/`K` one line, Home/End jump, `r` reload, `q`/Esc/Ctrl-C quit. The layout reflows when the terminal is resized.
 
 ## Box model
 
@@ -48,3 +51,11 @@ Outside in: `margin`, `border`, `pad`, content. `margin`, `border` and `pad` sha
 ```
 
 `border` is 0 or 1 cell per side, drawn with box characters (`.border:1`, `.border-x:1`, `.border:1,0,1,0`). Corners appear only where two drawn sides meet. `.border-color:cyan` sets its color (defaults to the foreground).
+
+## Size
+
+`size:W,H` sets an element's box (margin excluded) in cells. Each value is a number, `min` (smallest the content allows) or `max` (largest the parent allows). The default is `min,min`, so backgrounds, underlines and borders end right after the content. One value applies to both axes (`size:12` is 12x12; use `size:12,min` for width only); `size-x` / `size-y` set one axis. Text and inputs wrap at the width; an input with a fixed height scrolls to follow its caret.
+
+## Headers
+
+All headers are wrapped in `=` marks: `h1` uppercase with `===`; `h2` uppercase; `h3` bold, uppercase; `h4` bold; `h5` bold, underlined; `h6` underlined.

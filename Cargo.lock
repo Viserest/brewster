@@ -55,9 +55,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cursor"
+version = "0.1.0"
+dependencies = [
+ "layout",
+ "resolver",
+]
+
+[[package]]
 name = "engine"
 version = "0.1.0"
 dependencies = [
+ "cursor",
  "layout",
  "lexer",
  "parser",

@@ -123,6 +123,85 @@ pub fn border(style: &StyleMap) -> Result<[usize; 4], String> {
     Ok(b)
 }
 
+/// One axis of `size`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Dim {
+    /// Smallest the content allows: shrink to fit the children (text stays on one
+    /// line unless the parent is narrower, then it wraps at the parent's edge).
+    Min,
+    /// Largest the parent allows.
+    Max,
+    /// An exact number of terminal cells.
+    Cells(usize),
+}
+
+/// The `size` style: width and height of an element's box (margin excluded).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Size {
+    pub w: Dim,
+    pub h: Dim,
+}
+
+impl Default for Size {
+    fn default() -> Self {
+        Size {
+            w: Dim::Min,
+            h: Dim::Min,
+        }
+    }
+}
+
+fn parse_dim(s: &str) -> Result<Dim, String> {
+    match s {
+        "min" => Ok(Dim::Min),
+        "max" => Ok(Dim::Max),
+        n => n.parse::<usize>().map(Dim::Cells).map_err(|_| {
+            format!(
+                "`{}` is not a valid size (use a whole number of cells, `min` or `max`)",
+                n
+            )
+        }),
+    }
+}
+
+/// `size:W,H` where each value is a whole number of cells, `min` or `max`.
+/// One value applies to both axes. `size-x` / `size-y` override one axis.
+/// Without any of these an element is `min,min`: its styles end right after its content.
+pub fn size(style: &StyleMap) -> Result<Size, String> {
+    let mut sz = Size::default();
+    if let Some(v) = style.get("size") {
+        match v.len() {
+            1 => {
+                let d = parse_dim(&v[0])?;
+                sz = Size { w: d, h: d };
+            }
+            2 => {
+                sz = Size {
+                    w: parse_dim(&v[0])?,
+                    h: parse_dim(&v[1])?,
+                };
+            }
+            _ => return Err("`size` takes 1 value or 2 (width,height)".to_string()),
+        }
+    }
+    if let Some(v) = style.get("size-x") {
+        sz.w = parse_dim(first(v)?)?;
+    }
+    if let Some(v) = style.get("size-y") {
+        sz.h = parse_dim(first(v)?)?;
+    }
+    Ok(sz)
+}
+
+pub fn decode(s: &str) -> String {
+    s.replace("&copy;", "©")
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +220,76 @@ mod tests {
         assert_eq!(border(&m), Ok([0, 1, 0, 1]));
         m.insert("border".to_string(), vec!["2".to_string()]);
         assert!(border(&m).is_err());
+    }
+
+    fn st(pairs: &[(&str, &[&str])]) -> StyleMap {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.iter().map(|s| s.to_string()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn size_defaults_to_min() {
+        assert_eq!(size(&StyleMap::new()), Ok(Size::default()));
+        assert_eq!(Size::default().w, Dim::Min);
+    }
+
+    #[test]
+    fn size_values() {
+        let m = st(&[("size", &["20", "3"])]);
+        assert_eq!(
+            size(&m),
+            Ok(Size {
+                w: Dim::Cells(20),
+                h: Dim::Cells(3)
+            })
+        );
+        let m = st(&[("size", &["max", "min"])]);
+        assert_eq!(
+            size(&m),
+            Ok(Size {
+                w: Dim::Max,
+                h: Dim::Min
+            })
+        );
+        // One value applies to both axes.
+        let m = st(&[("size", &["max"])]);
+        assert_eq!(
+            size(&m),
+            Ok(Size {
+                w: Dim::Max,
+                h: Dim::Max
+            })
+        );
+    }
+
+    #[test]
+    fn size_axis_overrides() {
+        let m = st(&[("size", &["max"]), ("size-y", &["4"])]);
+        assert_eq!(
+            size(&m),
+            Ok(Size {
+                w: Dim::Max,
+                h: Dim::Cells(4)
+            })
+        );
+        let m = st(&[("size-x", &["7"])]);
+        assert_eq!(
+            size(&m),
+            Ok(Size {
+                w: Dim::Cells(7),
+                h: Dim::Min
+            })
+        );
+    }
+
+    #[test]
+    fn size_rejects_bad_values() {
+        assert!(size(&st(&[("size", &["wide"])])).is_err());
+        assert!(size(&st(&[("size", &["-1"])])).is_err());
+        assert!(size(&st(&[("size", &["1", "2", "3"])])).is_err());
+        assert!(size(&st(&[("size", &[])])).is_err());
     }
 
     #[test]

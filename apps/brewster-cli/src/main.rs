@@ -4,18 +4,21 @@
 //! - `brewster-cli FILE` on a terminal opens the interactive viewer.
 //! - `--once`, `--plain`, piped output, or stdin input print once and exit.
 
+mod app;
+mod clipboard;
 mod print;
 mod tui;
+mod view;
 
+use engine::render_source;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
 
-use engine::render_source;
-
 const USAGE: &str = "usage: brewster-cli [--once] [--plain] [--width N] [FILE]\n\
   FILE on a terminal opens the interactive viewer\n\
-  (j/k, arrows, space/b, g/G scroll; r reload; q quit)\n\
+  (j/k/Tab move the cursor, m cursor mode, y copy, enter edit input,\n\
+   p/ctrl-v paste, space/b page, g/G first/last, r reload, q quit)\n\
   --once    print once with colors and exit\n\
   --plain   print once without colors and exit\n\
   --width N layout width for one-shot output (default 80)\n\

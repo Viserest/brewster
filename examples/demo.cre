@@ -3,7 +3,7 @@
 let body = box
   .bcolor:#181818
   .fcolor:white
-  .pad:1,0,1,2
+  .pad:2,1
   .before:box {
     link https://example.com "Home Page"
     link https://example.com/projects "Projects Page"
@@ -13,7 +13,9 @@ let body = box
   }
 
 box.extends:body {
-  h1.align-x:middle "Hello, cre"
+  h1.align-x:middle "Hello, pseudo"
+  h2 "Second header"
+  h5 "Fifth header"
   p.fcolor:yellow "Yellow text"
   p.bcolor:black.fcolor:white "Black background, white foreground"
   pre r#"
@@ -26,7 +28,7 @@ fn main() {
 "#
   box.border:1.border-color:cyan {
     h1 "Admin Login"
-    input "name" "John Doe"
+    input.size:20,min "name" "John Doe the third of his name"
     input.protected "password" "hunter2"
     button "Submit this"
   }

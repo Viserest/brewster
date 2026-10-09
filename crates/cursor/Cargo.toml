@@ -1,0 +1,10 @@
+[package]
+name = "cursor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+layout = { path = "../layout" }
+
+[dev-dependencies]
+resolver = { path = "../resolver" }

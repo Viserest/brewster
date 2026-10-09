@@ -4,7 +4,7 @@ use engine::{Rgb, Row, row_text};
 
 fn paint(row: &Row) -> String {
     let mut out = String::new();
-    for s in row {
+    for s in &row.spans {
         if s.text.is_empty() {
             continue;
         }
