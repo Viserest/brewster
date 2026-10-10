@@ -4,11 +4,10 @@
 //! - `brewster-cli FILE` on a terminal opens the interactive viewer.
 //! - `--once`, `--plain`, piped output, or stdin input print once and exit.
 
-mod app;
 mod clipboard;
+mod keys;
 mod print;
 mod tui;
-mod view;
 
 use engine::render_source;
 use std::env;

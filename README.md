@@ -12,20 +12,22 @@ crates/
   style     colors, spacing, alignment, entities
   layout    resolved tree -> rows of styled spans (renderer-agnostic)
   cursor    cursor modes, copy text, input editing
+  viewer    interactive viewer state and key handling (no terminal or window code)
   engine    lex -> parse -> resolve -> layout in one call
 apps/
-  brewster-cli   terminal viewer (ANSI)
-  brewster       GUI viewer
+  brewster-cli   terminal viewer (crossterm)
+  brewster       GUI viewer (egui)
 examples/
   demo.cre
 ```
 
-Logic lives in `crates/*`; UI lives in `apps/*`. The crates use only `std`; `brewster-cli` uses `crossterm`.
+Logic lives in `crates/*`; UI lives in `apps/*`. The crates use only `std`; `brewster-cli` uses `crossterm` and `brewster` uses `eframe` (egui).
 
 ## Run
 
 ```
-cargo run -p brewster-cli -- examples/demo.cre               # interactive viewer
+cargo run -p brewster -- examples/demo.cre                    # GUI window
+cargo run -p brewster-cli -- examples/demo.cre               # interactive terminal viewer
 cargo run -p brewster-cli -- --once examples/demo.cre        # print once, with colors
 cargo run -p brewster-cli -- --width 60 --plain examples/demo.cre
 cargo test --workspace
@@ -59,3 +61,9 @@ Outside in: `margin`, `border`, `pad`, content. `margin`, `border` and `pad` sha
 ## Headers
 
 All headers are wrapped in `=` marks: `h1` uppercase with `===`; `h2` uppercase; `h3` bold, uppercase; `h4` bold; `h5` bold, underlined; `h6` underlined.
+
+## GUI backends
+
+`apps/brewster` picks its windowing backend with a Cargo feature. `egui` (via `eframe` 0.29) is the default and the only one implemented. `iced` and `slint` are reserved names and fail to compile with a clear message until someone implements them. The GUI paints the same cell grid as the terminal viewer (monospace font, one cell per character) and uses the same keys; the mouse wheel scrolls, Ctrl+C / Ctrl+V (Cmd on macOS) use the system clipboard, and the status line is a bar under the page.
+
+New backends only need to turn their input events into `viewer::KeyPress`es, call `Viewer::on_key` / `on_paste` / `on_resize`, and paint `Viewer::page` with `viewer::paint::row_pieces`; see `apps/brewster/src/egui_backend.rs`.

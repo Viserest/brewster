@@ -54,7 +54,12 @@ fn underline_covers_only_the_text() {
 
 #[test]
 fn border_and_pad_hug_the_content() {
-    let p = el("p", &[("border", &["1"]), ("pad-x", &["1"])], &["hi"], vec![]);
+    let p = el(
+        "p",
+        &[("border", &["1"]), ("pad-x", &["1"])],
+        &["hi"],
+        vec![],
+    );
     let rows = lay(&[p], 12).rows;
     assert_eq!(
         texts(&rows),
@@ -78,7 +83,10 @@ fn box_is_as_wide_as_its_widest_child() {
         ],
     );
     let rows = lay(&[b], 10).rows;
-    assert_eq!(texts(&rows), vec!["ab        ".to_string(), "abcd      ".to_string()]);
+    assert_eq!(
+        texts(&rows),
+        vec!["ab        ".to_string(), "abcd      ".to_string()]
+    );
     // Blue covers exactly the 4-cell box (text + gap), not the whole row.
     let blue: usize = rows[0]
         .spans
@@ -107,7 +115,12 @@ fn nested_margin_counts_toward_parent_width() {
 
 #[test]
 fn size_max_fills_the_parent() {
-    let p = el("p", &[("size", &["max"]), ("bcolor", &["red"])], &["hi"], vec![]);
+    let p = el(
+        "p",
+        &[("size", &["max"]), ("bcolor", &["red"])],
+        &["hi"],
+        vec![],
+    );
     let rows = lay(&[p], 6).rows;
     assert_eq!(texts(&rows), vec!["hi    ".to_string()]);
     assert_eq!(rows[0].spans.len(), 2);
@@ -121,7 +134,12 @@ fn size_max_inside_a_min_box_uses_the_box_width() {
         &[],
         &[],
         vec![
-            el("p", &[("size-x", &["max"]), ("bcolor", &["red"])], &["a"], vec![]),
+            el(
+                "p",
+                &[("size-x", &["max"]), ("bcolor", &["red"])],
+                &["a"],
+                vec![],
+            ),
             el("p", &[], &["abcdef"], vec![]),
         ],
     );
@@ -137,7 +155,12 @@ fn size_max_inside_a_min_box_uses_the_box_width() {
 
 #[test]
 fn size_cells_sets_exact_width_and_height() {
-    let p = el("p", &[("size", &["6", "3"]), ("border", &["1"])], &["a"], vec![]);
+    let p = el(
+        "p",
+        &[("size", &["6", "3"]), ("border", &["1"])],
+        &["a"],
+        vec![],
+    );
     let rows = lay(&[p], 10).rows;
     assert_eq!(
         texts(&rows),
@@ -150,7 +173,10 @@ fn size_cells_sets_exact_width_and_height() {
     // 6x3 box with a border leaves a 4x1 content area.
     let q = el("p", &[("size", &["4", "3"])], &["a"], vec![]);
     let rows = lay(&[q], 4).rows;
-    assert_eq!(texts(&rows), vec!["a   ".to_string(), "    ".to_string(), "    ".to_string()]);
+    assert_eq!(
+        texts(&rows),
+        vec!["a   ".to_string(), "    ".to_string(), "    ".to_string()]
+    );
 }
 
 #[test]
@@ -164,7 +190,10 @@ fn fixed_height_truncates_extra_lines() {
 fn text_wraps_at_the_parent_edge_when_min() {
     let p = el("p", &[], &["aaa bbb ccc"], vec![]);
     let rows = lay(&[p], 7).rows;
-    assert_eq!(texts(&rows), vec!["aaa bbb".to_string(), "ccc    ".to_string()]);
+    assert_eq!(
+        texts(&rows),
+        vec!["aaa bbb".to_string(), "ccc    ".to_string()]
+    );
 }
 
 #[test]
@@ -178,9 +207,18 @@ fn size_never_exceeds_the_parent() {
 
 #[test]
 fn input_wraps_to_its_size() {
-    let i = el("input", &[("size-x", &["10"])], &["name", "hello world foo"], vec![]);
+    let i = el(
+        "input",
+        &[("size-x", &["10"])],
+        &["name", "hello world foo"],
+        vec![],
+    );
     let page = lay(&[i], 10);
-    let lines: Vec<String> = page.rows.iter().map(|r| row_text(r).trim_end().to_string()).collect();
+    let lines: Vec<String> = page
+        .rows
+        .iter()
+        .map(|r| row_text(r).trim_end().to_string())
+        .collect();
     assert_eq!(lines, vec!["name:", "[hello", "world foo]"]);
     assert_eq!(page.inputs[0].segs, vec![(0, 6), (6, 13), (13, 23)]);
 }
@@ -297,7 +335,11 @@ fn header_wraps_inside_its_marks() {
     // Width 9 leaves 5 cells between the marks, so each word gets its own line.
     assert_eq!(
         texts(&rows),
-        vec!["= aaa =  ".to_string(), "= bbb =  ".to_string(), "= ccc =  ".to_string()]
+        vec![
+            "= aaa =  ".to_string(),
+            "= bbb =  ".to_string(),
+            "= ccc =  ".to_string()
+        ]
     );
 }
 
@@ -319,16 +361,33 @@ fn rows_carry_kind_focus_and_copy_text() {
     assert_eq!(infos.len(), 5);
     assert_eq!(infos[0].kind, Kind::Text);
     assert_eq!(infos[0].focus, None);
-    assert_eq!((infos[1].kind, infos[1].focus, infos[1].text.as_str()), (Kind::Link, Some(0), "Home"));
-    assert_eq!((infos[2].kind, infos[2].focus, infos[2].text.as_str()), (Kind::Button, Some(1), "Go"));
-    assert_eq!((infos[3].kind, infos[3].focus, infos[3].input), (Kind::Input, Some(2), Some(0)));
+    assert_eq!(
+        (infos[1].kind, infos[1].focus, infos[1].text.as_str()),
+        (Kind::Link, Some(0), "Home")
+    );
+    assert_eq!(
+        (infos[2].kind, infos[2].focus, infos[2].text.as_str()),
+        (Kind::Button, Some(1), "Go")
+    );
+    assert_eq!(
+        (infos[3].kind, infos[3].focus, infos[3].input),
+        (Kind::Input, Some(2), Some(0))
+    );
     assert_eq!(infos[3].text, "v");
-    assert_eq!((infos[4].kind, infos[4].text.as_str()), (Kind::Pre, "raw  text"));
+    assert_eq!(
+        (infos[4].kind, infos[4].text.as_str()),
+        (Kind::Pre, "raw  text")
+    );
 }
 
 #[test]
 fn spacing_rows_have_no_info() {
-    let p = el("p", &[("margin", &["1"]), ("pad", &["1"]), ("border", &["1"])], &["x"], vec![]);
+    let p = el(
+        "p",
+        &[("margin", &["1"]), ("pad", &["1"]), ("border", &["1"])],
+        &["x"],
+        vec![],
+    );
     let rows = lay(&[p], 10).rows;
     let with_info = rows.iter().filter(|r| r.info.is_some()).count();
     assert_eq!(rows.len(), 7);
@@ -337,7 +396,12 @@ fn spacing_rows_have_no_info() {
 
 #[test]
 fn cols_cover_exactly_the_text() {
-    let p = el("p", &[("align", &["middle"]), ("margin-x", &["1"])], &["ab"], vec![]);
+    let p = el(
+        "p",
+        &[("align", &["middle"]), ("margin-x", &["1"])],
+        &["ab"],
+        vec![],
+    );
     let rows = lay(&[p], 10).rows;
     let info = rows[0].info.as_ref().unwrap();
     let t = row_text(&rows[0]);
@@ -376,7 +440,12 @@ fn rows_are_exactly_as_wide_as_requested() {
     let page = lay(
         &[
             el("h1", &[("align", &["middle"])], &["Title"], vec![]),
-            el("box", &[("border", &["1"]), ("pad", &["1"])], &[], vec![el("p", &[], &["body text"], vec![])]),
+            el(
+                "box",
+                &[("border", &["1"]), ("pad", &["1"])],
+                &[],
+                vec![el("p", &[], &["body text"], vec![])],
+            ),
             el("input", &[("size", &["max"])], &["n", "v"], vec![]),
         ],
         33,

@@ -1,5 +1,8 @@
-//! Interactive viewer state and key handling. Everything here is independent of drawing,
-//! so it can be driven (and tested) with plain key events.
+//! Viewer: the state and key handling of an interactive page viewer, independent of any
+//! terminal or window. A frontend (terminal, GUI) turns its own input events into
+//! [`KeyPress`]es, calls [`Viewer::on_key`] / [`Viewer::on_paste`] / [`Viewer::on_resize`],
+//! then paints [`Viewer::page`] from [`Viewer::top`] and sends [`Viewer::take_copy`] to
+//! the system clipboard.
 //!
 //! Two kinds of keys:
 //! - cursor keys (`j`/`k`, arrows, Tab, `g`/`G` for the first / last stop) move the cursor
@@ -7,10 +10,68 @@
 //! - view keys (space/`b`, PageUp/PageDown, `J`/`K`, Home/End) scroll the view and the
 //!   cursor is pulled onto a stop that is still visible.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+pub mod paint;
+
 use engine::{Cursor, Document, EditKey, Form, Mode, Page, edit, scroll_into_view};
 use std::fs;
 use std::ops::Range;
+
+/// A key, as far as the viewer cares. Printable input is `Char`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Char(char),
+    Esc,
+    Enter,
+    Tab,
+    BackTab,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Backspace,
+    Delete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Mods {
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyPress {
+    pub key: Key,
+    pub mods: Mods,
+}
+
+impl KeyPress {
+    pub fn new(key: Key, mods: Mods) -> KeyPress {
+        KeyPress { key, mods }
+    }
+
+    /// A key without modifiers.
+    pub fn plain(key: Key) -> KeyPress {
+        KeyPress {
+            key,
+            mods: Mods::default(),
+        }
+    }
+
+    /// A key with Ctrl held.
+    pub fn ctrl(key: Key) -> KeyPress {
+        KeyPress {
+            key,
+            mods: Mods {
+                ctrl: true,
+                alt: false,
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
@@ -18,7 +79,7 @@ pub enum Flow {
     Quit,
 }
 
-pub struct App {
+pub struct Viewer {
     pub path: String,
     doc: Document,
     pub form: Form,
@@ -26,12 +87,12 @@ pub struct App {
     pub cursor: Cursor,
     pub top: usize,
     pub width: usize,
-    /// Terminal height in rows; the last row is the status line.
+    /// Height in rows including one row for the status line (`view_h` is one less).
     pub height: usize,
     pub notice: Option<String>,
-    /// Last text copied or cut inside the app, used by `p` / Ctrl+V.
+    /// Last text copied or cut inside the viewer, used by `p` / Ctrl+V.
     pub register: String,
-    /// Text the terminal should be asked to put on the system clipboard.
+    /// Text the frontend should put on the system clipboard (see [`Viewer::take_copy`]).
     pub pending_copy: Option<String>,
 }
 
@@ -40,23 +101,23 @@ fn load(path: &str) -> Result<Document, String> {
     Document::parse(&src)
 }
 
-impl App {
-    pub fn new(path: &str, width: usize, height: usize) -> Result<App, String> {
+impl Viewer {
+    pub fn new(path: &str, width: usize, height: usize) -> Result<Viewer, String> {
         let doc = load(path)?;
-        Ok(App::from_document(path, doc, width, height))
+        Ok(Viewer::from_document(path, doc, width, height))
     }
 
-    pub fn from_document(path: &str, doc: Document, width: usize, height: usize) -> App {
+    pub fn from_document(path: &str, doc: Document, width: usize, height: usize) -> Viewer {
         let width = width.max(1);
         let form = Form::default();
-        // Layout errors (a bad style value, say) are reported before the terminal is touched
-        // by `new`; here they fall back to an empty page with a notice.
+        // Layout errors (a bad style value, say) are reported before the frontend starts by
+        // `new` callers checking `notice`; here they fall back to an empty page with a notice.
         let (page, notice) = match doc.layout(width, &form) {
             Ok(p) => (p, None),
             Err(e) => (Page::default(), Some(e)),
         };
         let cursor = Cursor::new(Mode::Focused, &page);
-        App {
+        Viewer {
             path: path.to_string(),
             doc,
             form,
@@ -81,6 +142,39 @@ impl App {
 
     pub fn editing(&self) -> Option<usize> {
         edit::editing(&self.form)
+    }
+
+    /// Rows to draw as "under the cursor" (see [`paint::row_pieces`]).
+    pub fn highlight(&self) -> Option<Range<usize>> {
+        self.cursor.highlight(&self.page)
+    }
+
+    /// Takes the text a frontend should put on the system clipboard.
+    pub fn take_copy(&mut self) -> Option<String> {
+        self.pending_copy.take()
+    }
+
+    /// The line a frontend shows in its status bar.
+    pub fn status(&self) -> String {
+        if let Some(n) = &self.notice {
+            return n.replace('\n', " ");
+        }
+        if let Some(id) = self.editing() {
+            return format!(
+                "editing input {}  type to edit  arrows move  ctrl-c copy  ctrl-v paste  enter/esc done",
+                id + 1
+            );
+        }
+        let pos = match self.cursor.row() {
+            Some(r) => format!("line {}/{}", r + 1, self.page.rows.len()),
+            None => "no cursor".to_string(),
+        };
+        format!(
+            "{}  [{}] {}  q quit  m mode  j/k move  y copy  enter edit  space/b page  r reload",
+            self.path,
+            self.cursor.mode().name(),
+            pos
+        )
     }
 
     /// The rows the view should keep visible: the caret row while editing, else the cursor.
@@ -118,9 +212,10 @@ impl App {
         self.follow();
     }
 
-    pub fn on_resize(&mut self, cols: u16, rows: u16) {
-        self.width = (cols as usize).max(1);
-        self.height = rows as usize;
+    /// The view is now `cols` x `rows` cells, the status line row included in `rows`.
+    pub fn on_resize(&mut self, cols: usize, rows: usize) {
+        self.width = cols.max(1);
+        self.height = rows;
         self.relayout();
     }
 
@@ -129,10 +224,23 @@ impl App {
         self.paste(text);
     }
 
-    pub fn on_key(&mut self, key: KeyEvent) -> Flow {
-        if key.kind == KeyEventKind::Release {
-            return Flow::Continue;
+    /// Scrolls the view by `delta` lines (negative is up), as a mouse wheel does.
+    pub fn scroll_lines(&mut self, delta: isize) {
+        self.scroll_by(delta);
+    }
+
+    /// "Copy" as a frontend's copy command (Ctrl+C / Cmd+C / the copy event): the value of
+    /// the input being edited, else the line under the cursor.
+    pub fn copy_selection(&mut self) {
+        self.notice = None;
+        if self.editing().is_some() {
+            self.copy_value();
+        } else {
+            self.copy();
         }
+    }
+
+    pub fn on_key(&mut self, key: KeyPress) -> Flow {
         self.notice = None;
         if self.editing().is_some() {
             self.key_editing(key);
@@ -144,11 +252,11 @@ impl App {
 
     // ── normal mode ─────────────────────────────────────────────────
 
-    fn key_normal(&mut self, key: KeyEvent) -> Flow {
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('c') => return Flow::Quit,
-                KeyCode::Char('v') => {
+    fn key_normal(&mut self, key: KeyPress) -> Flow {
+        if key.mods.ctrl {
+            match key.key {
+                Key::Char('c') => return Flow::Quit,
+                Key::Char('v') => {
                     let text = self.register.clone();
                     self.paste(text);
                 }
@@ -157,31 +265,31 @@ impl App {
             return Flow::Continue;
         }
         let page = self.view_h() as isize;
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return Flow::Quit,
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => self.step(true),
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => self.step(false),
-            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_by(page),
-            KeyCode::PageUp | KeyCode::Char('b') => self.scroll_by(-page),
-            KeyCode::Char('J') => self.scroll_by(1),
-            KeyCode::Char('K') => self.scroll_by(-1),
-            KeyCode::Char('g') => self.edge(false),
-            KeyCode::Char('G') => self.edge(true),
-            KeyCode::Home => self.scroll_to(0, false),
-            KeyCode::End => self.scroll_to(self.max_top(), true),
-            KeyCode::Char('m') => {
+        match key.key {
+            Key::Char('q') | Key::Esc => return Flow::Quit,
+            Key::Down | Key::Char('j') | Key::Tab => self.step(true),
+            Key::Up | Key::Char('k') | Key::BackTab => self.step(false),
+            Key::PageDown | Key::Char(' ') => self.scroll_by(page),
+            Key::PageUp | Key::Char('b') => self.scroll_by(-page),
+            Key::Char('J') => self.scroll_by(1),
+            Key::Char('K') => self.scroll_by(-1),
+            Key::Char('g') => self.edge(false),
+            Key::Char('G') => self.edge(true),
+            Key::Home => self.scroll_to(0, false),
+            Key::End => self.scroll_to(self.max_top(), true),
+            Key::Char('m') => {
                 let next = self.cursor.mode().toggle();
                 self.cursor.set_mode(next, &self.page);
                 self.follow();
                 self.notice = Some(format!("cursor mode: {}", next.name()));
             }
-            KeyCode::Char('y') | KeyCode::Char('c') => self.copy(),
-            KeyCode::Char('p') => {
+            Key::Char('y') | Key::Char('c') => self.copy(),
+            Key::Char('p') => {
                 let text = self.register.clone();
                 self.paste(text);
             }
-            KeyCode::Enter | KeyCode::Char('i') => self.start_edit(),
-            KeyCode::Char('r') => self.reload(),
+            Key::Enter | Key::Char('i') => self.start_edit(),
+            Key::Char('r') => self.reload(),
             _ => {}
         }
         Flow::Continue
@@ -279,42 +387,42 @@ impl App {
 
     // ── editing and paste ───────────────────────────────────────────
 
-    fn key_editing(&mut self, key: KeyEvent) {
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            match key.code {
-                KeyCode::Char('c') => self.copy_value(),
-                KeyCode::Char('v') => {
+    fn key_editing(&mut self, key: KeyPress) {
+        if key.mods.ctrl {
+            match key.key {
+                Key::Char('c') => self.copy_value(),
+                Key::Char('v') => {
                     let text = self.register.clone();
                     self.paste(text);
                 }
-                KeyCode::Char('a') => self.edit_key(EditKey::Home),
-                KeyCode::Char('e') => self.edit_key(EditKey::End),
+                Key::Char('a') => self.edit_key(EditKey::Home),
+                Key::Char('e') => self.edit_key(EditKey::End),
                 _ => {}
             }
             return;
         }
-        if key.modifiers.contains(KeyModifiers::ALT) {
+        if key.mods.alt {
             return;
         }
-        match key.code {
-            KeyCode::Esc | KeyCode::Enter => self.stop_edit(),
-            KeyCode::Tab => {
+        match key.key {
+            Key::Esc | Key::Enter => self.stop_edit(),
+            Key::Tab => {
                 self.stop_edit();
                 self.step(true);
             }
-            KeyCode::BackTab => {
+            Key::BackTab => {
                 self.stop_edit();
                 self.step(false);
             }
-            KeyCode::Char(c) => self.edit_key(EditKey::Insert(c)),
-            KeyCode::Backspace => self.edit_key(EditKey::Backspace),
-            KeyCode::Delete => self.edit_key(EditKey::Delete),
-            KeyCode::Left => self.edit_key(EditKey::Left),
-            KeyCode::Right => self.edit_key(EditKey::Right),
-            KeyCode::Home => self.edit_key(EditKey::Home),
-            KeyCode::End => self.edit_key(EditKey::End),
-            KeyCode::Up => self.edit_key(EditKey::Up),
-            KeyCode::Down => self.edit_key(EditKey::Down),
+            Key::Char(c) => self.edit_key(EditKey::Insert(c)),
+            Key::Backspace => self.edit_key(EditKey::Backspace),
+            Key::Delete => self.edit_key(EditKey::Delete),
+            Key::Left => self.edit_key(EditKey::Left),
+            Key::Right => self.edit_key(EditKey::Right),
+            Key::Home => self.edit_key(EditKey::Home),
+            Key::End => self.edit_key(EditKey::End),
+            Key::Up => self.edit_key(EditKey::Up),
+            Key::Down => self.edit_key(EditKey::Down),
             _ => {}
         }
     }
@@ -372,27 +480,27 @@ mod tests {
         input.protected \"pw\" \"hunter2\"\n\
         button \"Go\"\n";
 
-    fn app(src: &str, w: usize, h: usize) -> App {
-        App::from_document("test.cre", Document::parse(src).unwrap(), w, h)
+    fn app(src: &str, w: usize, h: usize) -> Viewer {
+        Viewer::from_document("test.cre", Document::parse(src).unwrap(), w, h)
     }
 
-    fn key(c: KeyCode) -> KeyEvent {
-        KeyEvent::new(c, KeyModifiers::NONE)
+    fn key(k: Key) -> KeyPress {
+        KeyPress::plain(k)
     }
 
-    fn ch(c: char) -> KeyEvent {
-        key(KeyCode::Char(c))
+    fn ch(c: char) -> KeyPress {
+        key(Key::Char(c))
     }
 
-    fn ctrl(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    fn ctrl(c: char) -> KeyPress {
+        KeyPress::ctrl(Key::Char(c))
     }
 
-    fn row_of(app: &App) -> usize {
+    fn row_of(app: &Viewer) -> usize {
         app.cursor.row().unwrap()
     }
 
-    fn text_of(app: &App, row: usize) -> String {
+    fn text_of(app: &Viewer, row: usize) -> String {
         engine::row_text(&app.page.rows[row]).trim_end().to_string()
     }
 
@@ -408,14 +516,14 @@ mod tests {
         let mut a = app(SRC, 40, 20);
         a.on_key(ch('j'));
         assert_eq!(row_of(&a), 3);
-        a.on_key(key(KeyCode::Down));
-        a.on_key(key(KeyCode::Tab));
+        a.on_key(key(Key::Down));
+        a.on_key(key(Key::Tab));
         assert_eq!(row_of(&a), 5);
         assert_eq!(a.on_key(ch('j')), Flow::Continue);
         assert_eq!(row_of(&a), 5);
-        a.on_key(key(KeyCode::BackTab));
+        a.on_key(key(Key::BackTab));
         a.on_key(ch('k'));
-        a.on_key(key(KeyCode::Up));
+        a.on_key(key(Key::Up));
         assert_eq!(row_of(&a), 2);
     }
 
@@ -472,14 +580,14 @@ mod tests {
     fn enter_edits_an_input_and_typing_changes_it() {
         let mut a = app(SRC, 40, 20);
         a.on_key(ch('j'));
-        a.on_key(key(KeyCode::Enter));
+        a.on_key(key(Key::Enter));
         assert_eq!(a.editing(), Some(0));
         a.on_key(ch('!'));
         assert_eq!(text_of(&a, 3), "name: [John!]");
-        a.on_key(key(KeyCode::Left));
-        a.on_key(key(KeyCode::Backspace));
+        a.on_key(key(Key::Left));
+        a.on_key(key(Key::Backspace));
         assert_eq!(text_of(&a, 3), "name: [Joh!]");
-        a.on_key(key(KeyCode::Esc));
+        a.on_key(key(Key::Esc));
         assert_eq!(a.editing(), None);
         assert_eq!(text_of(&a, 3), "name: [Joh!]");
         // The edit survives resizes.
@@ -503,7 +611,7 @@ mod tests {
     #[test]
     fn enter_on_a_link_does_not_edit() {
         let mut a = app(SRC, 40, 20);
-        a.on_key(key(KeyCode::Enter));
+        a.on_key(key(Key::Enter));
         assert_eq!(a.editing(), None);
         assert_eq!(a.notice.as_deref(), Some("not an input (enter edits inputs)"));
     }
@@ -516,7 +624,7 @@ mod tests {
         a.on_key(ch('x'));
         assert_eq!(a.on_key(ctrl('c')), Flow::Continue);
         assert_eq!(a.pending_copy.take().as_deref(), Some("Johnx"));
-        a.on_key(key(KeyCode::Esc));
+        a.on_key(key(Key::Esc));
         assert_eq!(a.on_key(ctrl('c')), Flow::Quit);
     }
 
@@ -537,7 +645,7 @@ mod tests {
         let mut a = app(SRC, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('i'));
-        a.on_key(key(KeyCode::Home));
+        a.on_key(key(Key::Home));
         a.on_paste("Dr. ".to_string());
         assert_eq!(text_of(&a, 3), "name: [Dr. John]");
         // Line breaks from the clipboard become spaces.
@@ -569,18 +677,9 @@ mod tests {
         let mut a = app(SRC, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('i'));
-        a.on_key(key(KeyCode::Tab));
+        a.on_key(key(Key::Tab));
         assert_eq!(a.editing(), None);
         assert_eq!(row_of(&a), 4);
-    }
-
-    #[test]
-    fn release_events_are_ignored() {
-        let mut a = app(SRC, 40, 20);
-        let mut k = ch('j');
-        k.kind = KeyEventKind::Release;
-        a.on_key(k);
-        assert_eq!(row_of(&a), 2);
     }
 
     #[test]
@@ -588,7 +687,7 @@ mod tests {
         let mut a = app(SRC, 40, 20);
         assert_eq!(a.on_key(ch('q')), Flow::Quit);
         let mut a = app(SRC, 40, 20);
-        assert_eq!(a.on_key(key(KeyCode::Esc)), Flow::Quit);
+        assert_eq!(a.on_key(key(Key::Esc)), Flow::Quit);
     }
 
     fn long_page() -> String {
@@ -608,14 +707,14 @@ mod tests {
         assert_eq!(a.top, 10);
         // The first button scrolled out and no stop is visible, so the cursor stays.
         assert_eq!(row_of(&a), 0);
-        a.on_key(key(KeyCode::End));
+        a.on_key(key(Key::End));
         assert_eq!(a.top, 32);
         assert_eq!(row_of(&a), 41); // the last button is visible and gets the cursor
-        a.on_key(key(KeyCode::Home));
+        a.on_key(key(Key::Home));
         assert_eq!(a.top, 0);
         assert_eq!(row_of(&a), 0);
-        a.on_key(key(KeyCode::PageDown));
-        a.on_key(key(KeyCode::PageUp));
+        a.on_key(key(Key::PageDown));
+        a.on_key(key(Key::PageUp));
         assert_eq!(a.top, 0);
     }
 
@@ -632,7 +731,7 @@ mod tests {
         assert_eq!(row_of(&b), 41);
         assert!(b.top <= 41 && 41 < b.top + 10);
         // End scrolls to the very end of the page instead.
-        b.on_key(key(KeyCode::End));
+        b.on_key(key(Key::End));
         assert_eq!(b.top, b.page.rows.len() - 10);
     }
 
@@ -721,10 +820,10 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("page.cre");
         fs::write(&path, "input \"a\" \"one\"\n").unwrap();
-        let mut a = App::new(path.to_str().unwrap(), 30, 10).unwrap();
+        let mut a = Viewer::new(path.to_str().unwrap(), 30, 10).unwrap();
         a.on_key(ch('i'));
         a.on_key(ch('X'));
-        a.on_key(key(KeyCode::Esc));
+        a.on_key(key(Key::Esc));
         assert_eq!(text_of(&a, 0), "a: [oneX]");
         fs::write(&path, "input \"a\" \"two\"\n").unwrap();
         a.on_key(ch('r'));
@@ -740,7 +839,62 @@ mod tests {
 
     #[test]
     fn missing_file_is_a_normal_error() {
-        let e = App::new("/definitely/not/here.cre", 10, 5).err().unwrap();
+        let e = Viewer::new("/definitely/not/here.cre", 10, 5).err().unwrap();
         assert!(e.starts_with("cannot read"));
+    }
+
+    #[test]
+    fn copy_selection_copies_the_line_or_the_edited_value() {
+        let mut a = app(SRC, 40, 20);
+        a.copy_selection();
+        assert_eq!(a.take_copy().as_deref(), Some("Home"));
+        assert_eq!(a.take_copy(), None);
+        a.on_key(ch('j'));
+        a.on_key(ch('i'));
+        a.on_key(ch('x'));
+        a.copy_selection();
+        assert_eq!(a.take_copy().as_deref(), Some("Johnx"));
+    }
+
+    #[test]
+    fn scroll_lines_moves_the_view_and_clamps() {
+        let mut a = app(&long_page(), 30, 11);
+        a.scroll_lines(3);
+        assert_eq!(a.top, 3);
+        a.scroll_lines(-10);
+        assert_eq!(a.top, 0);
+        a.scroll_lines(1000);
+        assert_eq!(a.top, 32);
+    }
+
+    #[test]
+    fn status_describes_the_state() {
+        let mut a = app(SRC, 40, 20);
+        let s = a.status();
+        assert!(s.contains("[focused]") && s.contains("line 3/6"), "{s}");
+        a.on_key(ch('m'));
+        assert_eq!(a.status(), "cursor mode: all");
+        a.on_key(ch('g'));
+        a.on_key(ch('j'));
+        a.on_key(ch('j'));
+        a.on_key(ch('j'));
+        a.on_key(ch('i'));
+        assert!(a.status().starts_with("editing input 1"));
+    }
+
+    #[test]
+    fn keys_with_ctrl_or_alt_never_type_text() {
+        let mut a = app(SRC, 40, 20);
+        a.on_key(ch('j'));
+        a.on_key(ch('i'));
+        a.on_key(KeyPress::new(Key::Char('z'), Mods { ctrl: false, alt: true }));
+        a.on_key(ctrl('z'));
+        assert_eq!(text_of(&a, 3), "name: [John]");
+        a.on_key(ctrl('a'));
+        a.on_key(ch('>'));
+        assert_eq!(text_of(&a, 3), "name: [>John]");
+        a.on_key(ctrl('e'));
+        a.on_key(ch('<'));
+        assert_eq!(text_of(&a, 3), "name: [>John<]");
     }
 }

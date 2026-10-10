@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 engine = { path = "../../crates/engine" }
+viewer = { path = "../../crates/viewer" }
 crossterm = "0.28"

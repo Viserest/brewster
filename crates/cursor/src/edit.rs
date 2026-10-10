@@ -60,7 +60,13 @@ pub fn value(form: &Form, page: &Page, input: usize) -> Option<String> {
 fn sanitize(s: &str) -> String {
     s.replace("\r\n", " ")
         .chars()
-        .map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c })
+        .map(|c| {
+            if matches!(c, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                c
+            }
+        })
         .filter(|c| !c.is_control())
         .collect()
 }
@@ -271,7 +277,11 @@ mod tests {
     #[test]
     fn paste_flattens_line_breaks_and_drops_controls() {
         let (mut form, page) = editing_form("", 40, &[]);
-        apply(&mut form, &page, EditKey::Paste("a\r\nb\nc\td\u{1b}e".to_string()));
+        apply(
+            &mut form,
+            &page,
+            EditKey::Paste("a\r\nb\nc\td\u{1b}e".to_string()),
+        );
         assert_eq!(val(&form), "a b c de");
     }
 
@@ -279,7 +289,11 @@ mod tests {
     fn empty_paste_changes_nothing() {
         let (mut form, page) = editing_form("x", 40, &[]);
         assert!(!apply(&mut form, &page, EditKey::Paste(String::new())));
-        assert!(!apply(&mut form, &page, EditKey::Paste("\u{1b}".to_string())));
+        assert!(!apply(
+            &mut form,
+            &page,
+            EditKey::Paste("\u{1b}".to_string())
+        ));
         assert_eq!(val(&form), "x");
     }
 

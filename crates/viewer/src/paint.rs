@@ -1,6 +1,8 @@
-//! Pure helpers for painting rows (no terminal access, so they are unit-tested).
+//! Pure helpers for painting rows (no terminal or window access, so they are unit-tested).
+//! Shared by every frontend.
 
 use engine::{Row, Span};
+use std::ops::Range;
 
 /// Splits a row into pieces so that cells `[from, to)` can be painted reversed.
 /// Every piece keeps the style of the span it came from.
@@ -50,6 +52,21 @@ pub fn reverse_range(
         return Some(if b > a { (a, b) } else { (a, a + 1) });
     }
     None
+}
+
+/// The pieces to paint for row `idx`, with the cells under the cursor (or the caret while
+/// editing) flagged as reversed. `highlight` is `Viewer::highlight`.
+pub fn row_pieces(
+    row: &Row,
+    idx: usize,
+    highlight: Option<&Range<usize>>,
+    editing: bool,
+) -> Vec<(Span, bool)> {
+    let range = row.info.as_ref().and_then(|i| {
+        let on_cursor = highlight.is_some_and(|h| h.contains(&idx));
+        reverse_range(on_cursor, i.cols, i.caret, editing)
+    });
+    mark(row, range)
 }
 
 #[cfg(test)]
@@ -150,5 +167,33 @@ mod tests {
         // While editing only the caret cell is reversed, and only on its row.
         assert_eq!(reverse_range(true, (2, 6), Some(4), true), Some((4, 5)));
         assert_eq!(reverse_range(true, (2, 6), None, true), None);
+    }
+
+    #[test]
+    fn row_pieces_marks_the_cursor_row_only() {
+        let info = engine::LineInfo {
+            kind: engine::Kind::Button,
+            text: "ab".to_string(),
+            cols: (1, 3),
+            focus: Some(0),
+            input: None,
+            caret: None,
+        };
+        let r = Row {
+            spans: vec![span(" ab ", None)],
+            info: Some(info),
+        };
+        let on = row_pieces(&r, 4, Some(&(3..6)), false);
+        assert_eq!(
+            texts(&on),
+            vec![
+                (" ".to_string(), false),
+                ("ab".to_string(), true),
+                (" ".to_string(), false)
+            ]
+        );
+        let off = row_pieces(&r, 9, Some(&(3..6)), false);
+        assert_eq!(off.len(), 1);
+        assert!(!off[0].1);
     }
 }

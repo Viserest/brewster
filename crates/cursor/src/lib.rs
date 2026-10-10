@@ -137,11 +137,9 @@ impl Cursor {
     /// Re-anchors after the page was laid out again (resize, edit). The element under
     /// the cursor is found by its focus id; on plain text the row index is kept.
     pub fn relayout(&mut self, page: &Page) {
-        let by_focus = self.focus.and_then(|f| {
-            page.rows
-                .iter()
-                .position(|r| focus_of(r) == Some(f))
-        });
+        let by_focus = self
+            .focus
+            .and_then(|f| page.rows.iter().position(|r| focus_of(r) == Some(f)));
         match by_focus {
             Some(i) => self.set(page, Some(i)),
             None => {
@@ -304,7 +302,7 @@ pub fn scroll_into_view(top: usize, view_h: usize, range: Range<usize>) -> usize
 
 #[cfg(test)]
 pub(crate) mod fixtures {
-    use layout::{Form, Page, layout_all};
+    use layout::{layout_all, Form, Page};
     use resolver::{Resolved, Style};
 
     pub fn el(
@@ -494,7 +492,15 @@ mod tests {
 
     #[test]
     fn copying_a_protected_input_yields_its_value() {
-        let p = page(&[el("input", &[("protected", &[])], &["pw", "hunter2"], vec![])], 30);
+        let p = page(
+            &[el(
+                "input",
+                &[("protected", &[])],
+                &["pw", "hunter2"],
+                vec![],
+            )],
+            30,
+        );
         let c = Cursor::new(Mode::Focused, &p);
         assert_eq!(c.copy_text(&p).as_deref(), Some("hunter2"));
     }

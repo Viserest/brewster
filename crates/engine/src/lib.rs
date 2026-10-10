@@ -5,8 +5,8 @@
 //! [`Document`] and lay it out again whenever the width or the form state changes.
 
 pub use cursor::edit::{self, EditKey};
-pub use cursor::{Cursor, Mode, scroll_into_view};
-pub use layout::{Form, InputLayout, Kind, LineInfo, Page, Rgb, Row, Span, row_text};
+pub use cursor::{scroll_into_view, Cursor, Mode};
+pub use layout::{row_text, Form, InputLayout, Kind, LineInfo, Page, Rgb, Row, Span};
 pub use parser::Stmt;
 
 use resolver::{Resolved, Resolver};
@@ -42,9 +42,7 @@ impl Document {
 
 /// Renders pseudo source into rows that are `width` cells wide.
 pub fn render_source(src: &str, width: usize) -> Result<Vec<Row>, String> {
-    Ok(Document::parse(src)?
-        .layout(width, &Form::default())?
-        .rows)
+    Ok(Document::parse(src)?.layout(width, &Form::default())?.rows)
 }
 
 #[cfg(test)]

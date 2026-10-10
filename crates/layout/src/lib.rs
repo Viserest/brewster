@@ -9,7 +9,7 @@
 
 use resolver::Resolved;
 use std::collections::HashMap;
-use style::{Align, Dim, Size, border, decode, first, parse_align, parse_color, size, spacing};
+use style::{border, decode, first, parse_align, parse_color, size, spacing, Align, Dim, Size};
 
 pub use style::Rgb;
 
