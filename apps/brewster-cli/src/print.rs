@@ -1,6 +1,6 @@
 //! One-shot output: render once and print to stdout (ANSI colors or plain text).
 
-use engine::{row_text, Rgb, Row};
+use engine::{Rgb, Row, row_text};
 
 fn paint(row: &Row) -> String {
     let mut out = String::new();

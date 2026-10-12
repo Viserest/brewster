@@ -26,6 +26,7 @@ const USAGE: &str = r#"usage: brewster-cli [OPTIONS] [FILE|URL]...
 Options:
   --once       print the first FILE once with colors and exit
   --plain      print the first FILE once without colors and exit
+  --compile    compile the first FILE as a plugin and print it as hex (for Plugin::compiled)
   --width N    layout width for one-shot output (default: terminal width, or 80)
 {}
   stdin is read when no FILE is given and the output is not a terminal (one-shot)"#;
@@ -34,6 +35,7 @@ fn run() -> Result<(), String> {
     let mut width: Option<usize> = None;
     let mut plain = env::var_os("NO_COLOR").is_some();
     let mut once = false;
+    let mut compile = false;
     let mut rest: Vec<String> = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(a) = args.next() {
@@ -50,6 +52,7 @@ fn run() -> Result<(), String> {
                 once = true;
             }
             "--once" => once = true,
+            "--compile" => compile = true,
             // Everything after `--` is an address.
             "--" => {
                 rest.push(a);
@@ -61,6 +64,18 @@ fn run() -> Result<(), String> {
     let opts = Options::parse(rest)?;
     if opts.help {
         println!("{}", USAGE.replace("{}", browser::launch::OPTIONS_HELP));
+        return Ok(());
+    }
+
+    if compile {
+        let p = opts.urls.first().ok_or("--compile needs a FILE")?;
+        let src = std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {}", p, e))?;
+        let plugin::Plugin::Compiled(bytes) =
+            plugin::Plugin::compile(&src).map_err(|e| e.to_string())?
+        else {
+            return Err("compile produced no bytes".to_string());
+        };
+        println!("{}", plugin::hex(&bytes));
         return Ok(());
     }
 

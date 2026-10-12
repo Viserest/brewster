@@ -1,7 +1,6 @@
 use super::*;
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use engine::Registry;
 use profile::Profile;
@@ -1171,4 +1170,57 @@ fn the_demo_example_button_runs_its_function() {
     }
     b.on_key(key(Key::Enter));
     assert!(contains(&b, "Hello, friend!"), "{:?}", text(&b));
+}
+
+#[test]
+fn the_compiled_example_matches_its_source_and_runs() {
+    // The hex in compiled.cre is the compiled form of banner.cre.
+    let compiled = include_str!("../../../examples/compiled.cre");
+    let source = include_str!("../../../examples/banner.cre");
+    let plugin::Plugin::Compiled(bytes) = plugin::Plugin::compile(source).unwrap() else {
+        panic!()
+    };
+    assert!(
+        compiled.contains(&plugin::hex(&bytes)),
+        "re-run `brewster-cli --compile examples/banner.cre`"
+    );
+
+    let mut m = files();
+    m.0.insert(
+        "http://example.com/demo/compiled.cre".to_string(),
+        compiled.to_string(),
+    );
+    let mut b = Browser::new(
+        Profile::new("t").unwrap(),
+        Registry::in_memory(),
+        Rc::new(m),
+        80,
+        24,
+    );
+    b.start(&["http://example.com/demo/compiled.cre".to_string()]);
+    b.on_key(key(Key::Enter)); // 1. run once
+    assert!(
+        contains(&b, "Hello from a compiled plugin"),
+        "{:?}",
+        text(&b)
+    );
+    b.on_key(ch('j'));
+    b.on_key(key(Key::Enter)); // 2. its function
+    assert!(
+        contains(&b, "compiled plugin's function ran"),
+        "{:?}",
+        text(&b)
+    );
+    b.on_key(ch('j'));
+    b.on_key(ch('j'));
+    b.on_key(key(Key::Enter)); // 4. corrupted
+    assert!(contains(&b, "Refused:"), "{:?}", text(&b));
+    b.on_key(ch('k'));
+    b.on_key(key(Key::Enter)); // 3. install
+    assert!(contains(&b, "Installed "), "{:?}", text(&b));
+    b.on_key(ch('r'));
+    assert!(
+        contains(&b, "Hello from a compiled plugin"),
+        "the installed plugin runs on reload"
+    );
 }

@@ -8,3 +8,4 @@ engine = { path = "../engine" }
 viewer = { path = "../viewer" }
 settings = { path = "../settings" }
 profile = { path = "../profile" }
+plugin = { path = "../plugin" }
