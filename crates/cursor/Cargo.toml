@@ -7,4 +7,4 @@ edition = "2024"
 layout = { path = "../layout" }
 
 [dev-dependencies]
-resolver = { path = "../resolver" }
+tree = { path = "../tree" }

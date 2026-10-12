@@ -478,17 +478,30 @@ dependencies = [
 name = "brewster"
 version = "0.1.0"
 dependencies = [
+ "browser",
  "eframe",
  "engine",
- "viewer",
+ "profile",
 ]
 
 [[package]]
 name = "brewster-cli"
 version = "0.1.0"
 dependencies = [
+ "browser",
  "crossterm",
  "engine",
+ "profile",
+ "viewer",
+]
+
+[[package]]
+name = "browser"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "profile",
+ "settings",
  "viewer",
 ]
 
@@ -792,7 +805,7 @@ name = "cursor"
 version = "0.1.0"
 dependencies = [
  "layout",
- "resolver",
+ "tree",
 ]
 
 [[package]]
@@ -1002,9 +1015,10 @@ version = "0.1.0"
 dependencies = [
  "cursor",
  "layout",
- "lexer",
- "parser",
- "resolver",
+ "location",
+ "plugin",
+ "script",
+ "tree",
 ]
 
 [[package]]
@@ -1722,8 +1736,8 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 name = "layout"
 version = "0.1.0"
 dependencies = [
- "resolver",
  "style",
+ "tree",
 ]
 
 [[package]]
@@ -1781,6 +1795,10 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "location"
+version = "0.1.0"
 
 [[package]]
 name = "lock_api"
@@ -2410,6 +2428,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "plugin"
+version = "0.1.0"
+dependencies = [
+ "lexer",
+ "location",
+ "parser",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2476,6 +2503,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "profile"
+version = "0.1.0"
+dependencies = [
+ "location",
+ "plugin",
+ "settings",
 ]
 
 [[package]]
@@ -2600,13 +2636,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
-name = "resolver"
-version = "0.1.0"
-dependencies = [
- "parser",
-]
-
-[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2681,6 +2710,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "script"
+version = "0.1.0"
+dependencies = [
+ "lexer",
+ "location",
+ "parser",
+ "plugin",
+ "tree",
+]
+
+[[package]]
 name = "sctk-adwaita"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2739,6 +2779,10 @@ dependencies = [
  "quote",
  "syn 3.0.6",
 ]
+
+[[package]]
+name = "settings"
+version = "0.1.0"
 
 [[package]]
 name = "sha1"
@@ -3145,6 +3189,10 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
 ]
+
+[[package]]
+name = "tree"
+version = "0.1.0"
 
 [[package]]
 name = "ttf-parser"

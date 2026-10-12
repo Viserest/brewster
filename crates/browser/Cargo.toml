@@ -1,0 +1,10 @@
+[package]
+name = "browser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+engine = { path = "../engine" }
+viewer = { path = "../viewer" }
+settings = { path = "../settings" }
+profile = { path = "../profile" }

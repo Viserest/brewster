@@ -12,8 +12,9 @@
 
 pub mod edit;
 
-use layout::{LineInfo, Page, Row};
 use std::ops::Range;
+
+use layout::{LineInfo, Page, Row};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
@@ -273,11 +274,7 @@ impl Cursor {
     /// protected). `None` when there is nothing to copy.
     pub fn copy_text(&self, page: &Page) -> Option<String> {
         let t = &self.current(page)?.text;
-        if t.is_empty() {
-            None
-        } else {
-            Some(t.clone())
-        }
+        if t.is_empty() { None } else { Some(t.clone()) }
     }
 
     /// Index of the input under the cursor, if the cursor is on one.
@@ -302,28 +299,32 @@ pub fn scroll_into_view(top: usize, view_h: usize, range: Range<usize>) -> usize
 
 #[cfg(test)]
 pub(crate) mod fixtures {
-    use layout::{layout_all, Form, Page};
-    use resolver::{Resolved, Style};
+    use layout::{Form, Page, layout_all};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tree::{Element, Style};
+
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
     pub fn el(
         tag: &str,
         style: &[(&str, &[&str])],
         args: &[&str],
-        children: Vec<Resolved>,
-    ) -> Resolved {
+        children: Vec<Element>,
+    ) -> Element {
         let mut s = Style::new();
         for (k, v) in style {
             s.insert(k.to_string(), v.iter().map(|x| x.to_string()).collect());
         }
-        Resolved {
+        Element {
             tag: tag.to_string(),
             style: s,
             args: args.iter().map(|x| x.to_string()).collect(),
             children,
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
-    pub fn page(roots: &[Resolved], width: usize) -> Page {
+    pub fn page(roots: &[Element], width: usize) -> Page {
         layout_all(roots, width, &Form::default()).unwrap()
     }
 

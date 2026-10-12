@@ -1,8 +1,9 @@
 //! Pure helpers for painting rows (no terminal or window access, so they are unit-tested).
 //! Shared by every frontend.
 
-use engine::{Row, Span};
 use std::ops::Range;
+
+use engine::{Row, Span};
 
 /// Splits a row into pieces so that cells `[from, to)` can be painted reversed.
 /// Every piece keeps the style of the span it came from.
@@ -14,11 +15,14 @@ pub fn mark(row: &Row, range: Option<(usize, usize)>) -> Vec<(Span, bool)> {
     let mut col = 0usize;
     for s in &row.spans {
         let chars: Vec<char> = s.text.chars().collect();
+        let w = s.scale.max(1) as usize;
+        // A character of a scaled span is `w` cells wide and is marked by its first cell.
+        let inside_at = |i: usize| col + i * w >= from && col + i * w < to;
         let mut i = 0usize;
         while i < chars.len() {
-            let inside = col + i >= from && col + i < to;
+            let inside = inside_at(i);
             let mut j = i + 1;
-            while j < chars.len() && (col + j >= from && col + j < to) == inside {
+            while j < chars.len() && inside_at(j) == inside {
                 j += 1;
             }
             out.push((
@@ -30,7 +34,7 @@ pub fn mark(row: &Row, range: Option<(usize, usize)>) -> Vec<(Span, bool)> {
             ));
             i = j;
         }
-        col += chars.len();
+        col += chars.len() * w;
     }
     out
 }
@@ -76,6 +80,7 @@ mod tests {
 
     fn span(text: &str, fg: Option<Rgb>) -> Span {
         Span {
+            scale: 1,
             text: text.to_string(),
             fg,
             bg: None,
@@ -85,7 +90,11 @@ mod tests {
     }
 
     fn row(spans: Vec<Span>) -> Row {
-        Row { spans, info: None }
+        Row {
+            spans,
+            info: None,
+            cont: false,
+        }
     }
 
     fn texts(p: &[(Span, bool)]) -> Vec<(String, bool)> {
@@ -156,7 +165,10 @@ mod tests {
     #[test]
     fn empty_spans_produce_nothing() {
         let r = row(vec![span("", None), span("a", None)]);
-        assert_eq!(texts(&mark(&r, Some((0, 1)))), vec![("a".to_string(), true)]);
+        assert_eq!(
+            texts(&mark(&r, Some((0, 1)))),
+            vec![("a".to_string(), true)]
+        );
     }
 
     #[test]
@@ -172,6 +184,8 @@ mod tests {
     #[test]
     fn row_pieces_marks_the_cursor_row_only() {
         let info = engine::LineInfo {
+            href: None,
+            node: 0,
             kind: engine::Kind::Button,
             text: "ab".to_string(),
             cols: (1, 3),
@@ -180,6 +194,7 @@ mod tests {
             caret: None,
         };
         let r = Row {
+            cont: false,
             spans: vec![span(" ab ", None)],
             info: Some(info),
         };

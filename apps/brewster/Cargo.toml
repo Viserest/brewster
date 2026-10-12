@@ -13,5 +13,6 @@ slint = []
 
 [dependencies]
 engine = { path = "../../crates/engine" }
-viewer = { path = "../../crates/viewer" }
+browser = { path = "../../crates/browser" }
+profile = { path = "../../crates/profile" }
 eframe = { version = "0.29", optional = true }

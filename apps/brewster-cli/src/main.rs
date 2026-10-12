@@ -9,55 +9,75 @@ mod keys;
 mod print;
 mod tui;
 
-use engine::render_source;
-use std::env;
-use std::fs;
-use std::io::{self, IsTerminal, Read};
+use std::{
+    env,
+    io::{self, IsTerminal, Read},
+};
 
-const USAGE: &str = "usage: brewster-cli [--once] [--plain] [--width N] [FILE]\n\
-  FILE on a terminal opens the interactive viewer\n\
-  (j/k/Tab move the cursor, m cursor mode, y copy, enter edit input,\n\
-   p/ctrl-v paste, space/b page, g/G first/last, r reload, q quit)\n\
-  --once    print once with colors and exit\n\
-  --plain   print once without colors and exit\n\
-  --width N layout width for one-shot output (default 80)\n\
-  stdin is read when FILE is omitted (one-shot)";
+use browser::launch::Options;
+use engine::{DefaultLoader, Loader, Url, render_source};
+
+const USAGE: &str = r#"usage: brewster-cli [OPTIONS] [FILE|URL]...
+  Opens the files and addresses as tabs in an interactive viewer. Without any, the last
+  session's tabs (or the home page) open. The viewer is as big as the terminal.
+  ctrl-p settings   ctrl-t new tab   ctrl-w close tab   alt-right/left switch tab
+  ctrl-l open address   enter or click opens a link (ctrl-click: new tab, shift-click:
+  new window, which is a tab here)   q quit   (all keys can be changed in the settings)
+Options:
+  --once       print the first FILE once with colors and exit
+  --plain      print the first FILE once without colors and exit
+  --width N    layout width for one-shot output (default: terminal width, or 80)
+{}
+  stdin is read when no FILE is given and the output is not a terminal (one-shot)"#;
 
 fn run() -> Result<(), String> {
-    let mut width = 80usize;
-    let mut path: Option<String> = None;
+    let mut width: Option<usize> = None;
     let mut plain = env::var_os("NO_COLOR").is_some();
     let mut once = false;
+    let mut rest: Vec<String> = Vec::new();
     let mut args = env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--width" => {
                 let v = args.next().ok_or("--width needs a number")?;
-                width = v
-                    .parse()
-                    .map_err(|_| "--width needs a number".to_string())?;
+                width = Some(
+                    v.parse()
+                        .map_err(|_| "--width needs a number".to_string())?,
+                );
             }
             "--plain" => {
                 plain = true;
                 once = true;
             }
             "--once" => once = true,
-            "-h" | "--help" => {
-                println!("{}", USAGE);
-                return Ok(());
+            // Everything after `--` is an address.
+            "--" => {
+                rest.push(a);
+                rest.extend(args.by_ref());
             }
-            _ => path = Some(a.clone()),
+            _ => rest.push(a),
         }
     }
-
-    if let Some(p) = &path {
-        if !once && io::stdout().is_terminal() {
-            return tui::run(p);
-        }
+    let opts = Options::parse(rest)?;
+    if opts.help {
+        println!("{}", USAGE.replace("{}", browser::launch::OPTIONS_HELP));
+        return Ok(());
     }
 
-    let src = match path {
-        Some(p) => fs::read_to_string(&p).map_err(|e| format!("cannot read {}: {}", p, e))?,
+    let interactive =
+        !once && io::stdout().is_terminal() && (io::stdin().is_terminal() || !opts.urls.is_empty());
+    if interactive {
+        return tui::run(&opts);
+    }
+
+    // One-shot: render the first file (or stdin) once and print it.
+    let src = match opts.urls.first() {
+        Some(p) => {
+            let url = Url::from_input(p);
+            DefaultLoader::default()
+                .load(&url)
+                .map_err(|e| format!("cannot read {}: {}", p, e))?
+        }
         None => {
             let mut s = String::new();
             io::stdin()
@@ -66,9 +86,19 @@ fn run() -> Result<(), String> {
             s
         }
     };
+    let width = width.or_else(|| terminal_width()).unwrap_or(80);
     let rows = render_source(&src, width)?;
     print!("{}", print::render(&rows, plain));
     Ok(())
+}
+
+/// The terminal's width when stdout is a terminal (e.g. `--once` on a terminal).
+fn terminal_width() -> Option<usize> {
+    if io::stdout().is_terminal() {
+        crossterm::terminal::size().ok().map(|(c, _)| c as usize)
+    } else {
+        None
+    }
 }
 
 fn main() {

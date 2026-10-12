@@ -1,0 +1,11 @@
+[package]
+name = "profile"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+settings = { path = "../settings" }
+plugin = { path = "../plugin" }
+
+[dev-dependencies]
+location = { path = "../location" }

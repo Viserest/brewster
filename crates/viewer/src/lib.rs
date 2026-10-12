@@ -12,9 +12,11 @@
 
 pub mod paint;
 
-use engine::{Cursor, Document, EditKey, Form, Mode, Page, edit, scroll_into_view};
-use std::fs;
 use std::ops::Range;
+
+use engine::{
+    Cursor, Document, EditKey, Form, Kind, LayoutOptions, Mode, Page, edit, scroll_into_view,
+};
 
 /// A key, as far as the viewer cares. Printable input is `Char`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,12 +36,15 @@ pub enum Key {
     PageDown,
     Backspace,
     Delete,
+    /// A function key, `F(1)` to `F(12)`.
+    F(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Mods {
     pub ctrl: bool,
     pub alt: bool,
+    pub shift: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,20 +73,41 @@ impl KeyPress {
             mods: Mods {
                 ctrl: true,
                 alt: false,
+                shift: false,
             },
         }
     }
 }
 
+/// Where a followed link opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Same,
+    Tab,
+    Window,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Flow {
     Continue,
-    Quit,
+    /// A link was followed. `url` is as written in the page (not yet resolved).
+    Open {
+        url: String,
+        target: Target,
+    },
 }
 
 pub struct Viewer {
+    /// What the page is called (its address); shown in the status line.
     pub path: String,
     doc: Document,
+    /// The document is as high as the screen: top-level `size:max` fills it.
+    pub fill: bool,
+    /// Draw header font sizes (graphical frontends only).
+    pub scale_headers: bool,
+    /// Whether Enter on a link follows it (`Flow::Open`). The browser turns this off and
+    /// follows links through its key bindings instead.
+    pub enter_follows_links: bool,
     pub form: Form,
     pub page: Page,
     pub cursor: Cursor,
@@ -96,23 +122,16 @@ pub struct Viewer {
     pub pending_copy: Option<String>,
 }
 
-fn load(path: &str) -> Result<Document, String> {
-    let src = fs::read_to_string(path).map_err(|e| format!("cannot read {}: {}", path, e))?;
-    Document::parse(&src)
-}
-
 impl Viewer {
-    pub fn new(path: &str, width: usize, height: usize) -> Result<Viewer, String> {
-        let doc = load(path)?;
-        Ok(Viewer::from_document(path, doc, width, height))
-    }
-
     pub fn from_document(path: &str, doc: Document, width: usize, height: usize) -> Viewer {
         let width = width.max(1);
         let form = Form::default();
-        // Layout errors (a bad style value, say) are reported before the frontend starts by
-        // `new` callers checking `notice`; here they fall back to an empty page with a notice.
-        let (page, notice) = match doc.layout(width, &form) {
+        let opts = LayoutOptions {
+            viewport_rows: Some(height.saturating_sub(1).max(1)),
+            scale_headers: false,
+        };
+        // Layout errors (a bad style value, say) fall back to an empty page with a notice.
+        let (page, notice) = match doc.layout(width, &form, opts) {
             Ok(p) => (p, None),
             Err(e) => (Page::default(), Some(e)),
         };
@@ -120,6 +139,9 @@ impl Viewer {
         Viewer {
             path: path.to_string(),
             doc,
+            fill: true,
+            scale_headers: false,
+            enter_follows_links: true,
             form,
             page,
             cursor,
@@ -130,6 +152,31 @@ impl Viewer {
             register: String::new(),
             pending_copy: None,
         }
+    }
+
+    pub fn document(&self) -> &Document {
+        &self.doc
+    }
+
+    /// The layout options for the current screen.
+    fn options(&self) -> LayoutOptions {
+        LayoutOptions {
+            viewport_rows: self.fill.then(|| self.view_h()),
+            scale_headers: self.scale_headers,
+        }
+    }
+
+    /// Changes how the page is fitted to the screen and draws it again.
+    pub fn set_options(&mut self, fill: bool, scale_headers: bool) {
+        self.fill = fill;
+        self.scale_headers = scale_headers;
+        self.relayout();
+    }
+
+    /// Sets the cursor mode (the browser applies the `view.cursor_mode` setting).
+    pub fn set_mode(&mut self, mode: Mode) {
+        self.cursor.set_mode(mode, &self.page);
+        self.follow();
     }
 
     pub fn view_h(&self) -> usize {
@@ -170,7 +217,7 @@ impl Viewer {
             None => "no cursor".to_string(),
         };
         format!(
-            "{}  [{}] {}  q quit  m mode  j/k move  y copy  enter edit  space/b page  r reload",
+            "{}  [{}] {}  q quit  m mode  j/k move  y copy  enter edit  space/b page",
             self.path,
             self.cursor.mode().name(),
             pos
@@ -202,7 +249,7 @@ impl Viewer {
 
     /// Lays the page out again after a resize, an edit or a mode change.
     fn relayout(&mut self) {
-        match self.doc.layout(self.width, &self.form) {
+        match self.doc.layout(self.width, &self.form, self.options()) {
             Ok(p) => {
                 self.page = p;
                 self.cursor.relayout(&self.page);
@@ -255,7 +302,6 @@ impl Viewer {
     fn key_normal(&mut self, key: KeyPress) -> Flow {
         if key.mods.ctrl {
             match key.key {
-                Key::Char('c') => return Flow::Quit,
                 Key::Char('v') => {
                     let text = self.register.clone();
                     self.paste(text);
@@ -266,7 +312,6 @@ impl Viewer {
         }
         let page = self.view_h() as isize;
         match key.key {
-            Key::Char('q') | Key::Esc => return Flow::Quit,
             Key::Down | Key::Char('j') | Key::Tab => self.step(true),
             Key::Up | Key::Char('k') | Key::BackTab => self.step(false),
             Key::PageDown | Key::Char(' ') => self.scroll_by(page),
@@ -288,8 +333,8 @@ impl Viewer {
                 let text = self.register.clone();
                 self.paste(text);
             }
-            Key::Enter | Key::Char('i') => self.start_edit(),
-            Key::Char('r') => self.reload(),
+            Key::Enter => return self.activate(),
+            Key::Char('i') => self.start_edit(),
             _ => {}
         }
         Flow::Continue
@@ -362,6 +407,73 @@ impl Viewer {
         self.pending_copy = Some(text);
     }
 
+    /// The address of the link under the cursor, as written in the page.
+    pub fn current_href(&self) -> Option<String> {
+        let info = self.cursor.current(&self.page)?;
+        if info.kind == Kind::Link {
+            info.href.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Enter on the cursor: runs a button's `onclick`, follows a link (after its `onclick`,
+    /// if it has one), or starts editing an input.
+    pub fn activate(&mut self) -> Flow {
+        let Some(info) = self.cursor.current(&self.page).cloned() else {
+            self.notice = Some("nothing under the cursor".to_string());
+            return Flow::Continue;
+        };
+        let mut ran = false;
+        if self.doc.is_clickable(info.node) {
+            ran = true;
+            match self.doc.click(info.node) {
+                Ok(_) => {}
+                Err(e) => self.notice = Some(e),
+            }
+            // The tree may have changed (even on error, up to the failing statement).
+            self.relayout();
+        }
+        match info.kind {
+            Kind::Link => match info.href {
+                Some(url) if self.enter_follows_links => Flow::Open {
+                    url,
+                    target: Target::Same,
+                },
+                _ => Flow::Continue,
+            },
+            Kind::Input => {
+                if info.input.is_some() {
+                    self.start_edit();
+                }
+                Flow::Continue
+            }
+            _ => {
+                if !ran {
+                    self.notice =
+                        Some("nothing to do here (no link, input or onclick)".to_string());
+                }
+                Flow::Continue
+            }
+        }
+    }
+
+    /// Moves the cursor to the stop on page row `row` (a mouse press). False when that row
+    /// has nothing the cursor can rest on in the current mode.
+    pub fn select_row(&mut self, row: usize) -> bool {
+        if self.editing().is_some() {
+            self.stop_edit();
+        }
+        if row >= self.page.rows.len() {
+            return false;
+        }
+        let ok = self.cursor.place_in(&self.page, row..row + 1, false);
+        if ok {
+            self.follow();
+        }
+        ok
+    }
+
     fn start_edit(&mut self) {
         match self.cursor.input(&self.page) {
             Some(id) => {
@@ -369,19 +481,6 @@ impl Viewer {
                 self.relayout();
             }
             None => self.notice = Some("not an input (enter edits inputs)".to_string()),
-        }
-    }
-
-    fn reload(&mut self) {
-        match load(&self.path) {
-            Ok(doc) => {
-                self.doc = doc;
-                // Input numbers can shift between versions of the file, so edits are dropped.
-                self.form = Form::default();
-                self.relayout();
-                self.notice = Some("reloaded".to_string());
-            }
-            Err(e) => self.notice = Some(e),
         }
     }
 
@@ -613,11 +712,21 @@ mod tests {
         let mut a = app(SRC, 40, 20);
         a.on_key(key(Key::Enter));
         assert_eq!(a.editing(), None);
-        assert_eq!(a.notice.as_deref(), Some("not an input (enter edits inputs)"));
     }
 
     #[test]
-    fn ctrl_c_copies_while_editing_and_quits_otherwise() {
+    fn i_on_a_link_says_it_is_not_an_input() {
+        let mut a = app(SRC, 40, 20);
+        a.on_key(ch('i'));
+        assert_eq!(a.editing(), None);
+        assert_eq!(
+            a.notice.as_deref(),
+            Some("not an input (enter edits inputs)")
+        );
+    }
+
+    #[test]
+    fn ctrl_c_copies_while_editing_and_does_nothing_otherwise() {
         let mut a = app(SRC, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('i'));
@@ -625,7 +734,8 @@ mod tests {
         assert_eq!(a.on_key(ctrl('c')), Flow::Continue);
         assert_eq!(a.pending_copy.take().as_deref(), Some("Johnx"));
         a.on_key(key(Key::Esc));
-        assert_eq!(a.on_key(ctrl('c')), Flow::Quit);
+        assert_eq!(a.on_key(ctrl('c')), Flow::Continue);
+        assert_eq!(a.pending_copy, None);
     }
 
     #[test]
@@ -667,7 +777,10 @@ mod tests {
         let mut a = app(SRC, 40, 20);
         a.on_paste("X".to_string());
         assert_eq!(a.editing(), None);
-        assert_eq!(a.notice.as_deref(), Some("move the cursor onto an input to paste"));
+        assert_eq!(
+            a.notice.as_deref(),
+            Some("move the cursor onto an input to paste")
+        );
         a.on_key(ch('p')); // empty register
         assert_eq!(a.notice.as_deref(), Some("nothing to paste"));
     }
@@ -683,11 +796,73 @@ mod tests {
     }
 
     #[test]
-    fn q_and_esc_quit() {
+    fn quitting_is_the_browsers_business() {
         let mut a = app(SRC, 40, 20);
-        assert_eq!(a.on_key(ch('q')), Flow::Quit);
+        assert_eq!(a.on_key(ch('q')), Flow::Continue);
+        assert_eq!(a.on_key(key(Key::Esc)), Flow::Continue);
+    }
+
+    #[test]
+    fn enter_on_a_link_opens_it_in_the_same_tab() {
         let mut a = app(SRC, 40, 20);
-        assert_eq!(a.on_key(key(Key::Esc)), Flow::Quit);
+        assert_eq!(a.current_href().as_deref(), Some("https://x.y"));
+        assert_eq!(
+            a.on_key(key(Key::Enter)),
+            Flow::Open {
+                url: "https://x.y".to_string(),
+                target: Target::Same
+            }
+        );
+        a.on_key(ch('j'));
+        assert_eq!(a.current_href(), None);
+    }
+
+    #[test]
+    fn enter_on_a_button_runs_its_onclick() {
+        let src = "fn hit(self: Element) { self.set_text(\"hit\") }\nbutton.onclick:hit \"idle\"\nbutton \"plain\"";
+        let mut a = app(src, 30, 10);
+        assert_eq!(a.on_key(key(Key::Enter)), Flow::Continue);
+        assert_eq!(text_of(&a, 0), "[ hit ]");
+        assert_eq!(a.cursor.row(), Some(0));
+        a.on_key(ch('j'));
+        a.on_key(key(Key::Enter));
+        assert!(a.notice.as_deref().unwrap().contains("nothing to do"));
+    }
+
+    #[test]
+    fn a_failing_onclick_is_reported() {
+        let mut a = app("button.onclick:nope \"B\"", 30, 10);
+        a.on_key(key(Key::Enter));
+        assert!(a.notice.as_deref().unwrap().contains("nope"));
+    }
+
+    #[test]
+    fn select_row_moves_the_cursor_to_a_stop() {
+        let mut a = app(SRC, 40, 20);
+        assert!(a.select_row(5));
+        assert_eq!(row_of(&a), 5);
+        assert!(!a.select_row(1), "plain text is not a stop in focused mode");
+        assert_eq!(row_of(&a), 5);
+        assert!(!a.select_row(99));
+        a.on_key(ch('j'));
+        a.on_key(ch('k'));
+        assert!(a.select_row(3));
+        a.on_key(key(Key::Enter));
+        assert_eq!(a.editing(), Some(0));
+        // pressing elsewhere ends the edit
+        assert!(a.select_row(2));
+        assert_eq!(a.editing(), None);
+    }
+
+    #[test]
+    fn size_max_fills_the_screen_when_fill_is_on() {
+        let mut a = app("box.size:max.bcolor:blue { p \"x\" }", 10, 6);
+        assert_eq!(a.page.rows.len(), 5);
+        a.set_options(false, false);
+        assert_eq!(a.page.rows.len(), 1);
+        a.set_options(true, false);
+        a.on_resize(10, 9);
+        assert_eq!(a.page.rows.len(), 8);
     }
 
     fn long_page() -> String {
@@ -815,35 +990,6 @@ mod tests {
     }
 
     #[test]
-    fn reload_picks_up_changes_and_drops_edits() {
-        let dir = std::env::temp_dir().join(format!("brewster-app-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("page.cre");
-        fs::write(&path, "input \"a\" \"one\"\n").unwrap();
-        let mut a = Viewer::new(path.to_str().unwrap(), 30, 10).unwrap();
-        a.on_key(ch('i'));
-        a.on_key(ch('X'));
-        a.on_key(key(Key::Esc));
-        assert_eq!(text_of(&a, 0), "a: [oneX]");
-        fs::write(&path, "input \"a\" \"two\"\n").unwrap();
-        a.on_key(ch('r'));
-        assert_eq!(text_of(&a, 0), "a: [two]");
-        assert_eq!(a.notice.as_deref(), Some("reloaded"));
-        // A broken file keeps the old page and reports the error.
-        fs::write(&path, "blink \"x\"\n").unwrap();
-        a.on_key(ch('r'));
-        assert_eq!(text_of(&a, 0), "a: [two]");
-        assert!(a.notice.as_deref().unwrap().contains("unknown element"));
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn missing_file_is_a_normal_error() {
-        let e = Viewer::new("/definitely/not/here.cre", 10, 5).err().unwrap();
-        assert!(e.starts_with("cannot read"));
-    }
-
-    #[test]
     fn copy_selection_copies_the_line_or_the_edited_value() {
         let mut a = app(SRC, 40, 20);
         a.copy_selection();
@@ -887,7 +1033,14 @@ mod tests {
         let mut a = app(SRC, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('i'));
-        a.on_key(KeyPress::new(Key::Char('z'), Mods { ctrl: false, alt: true }));
+        a.on_key(KeyPress::new(
+            Key::Char('z'),
+            Mods {
+                ctrl: false,
+                alt: true,
+                shift: false,
+            },
+        ));
         a.on_key(ctrl('z'));
         assert_eq!(text_of(&a, 3), "name: [John]");
         a.on_key(ctrl('a'));

@@ -1,6 +1,6 @@
 //! One-shot output: render once and print to stdout (ANSI colors or plain text).
 
-use engine::{Rgb, Row, row_text};
+use engine::{row_text, Rgb, Row};
 
 fn paint(row: &Row) -> String {
     let mut out = String::new();
@@ -34,7 +34,7 @@ pub fn render(rows: &[Row], plain: bool) -> String {
     let mut out = String::new();
     for row in rows {
         if plain {
-            out.push_str(&row_text(row));
+            out.push_str(row_text(row).trim_end());
         } else {
             out.push_str(&paint(row));
         }

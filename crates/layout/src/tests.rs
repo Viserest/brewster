@@ -1,16 +1,22 @@
 use super::*;
-use resolver::Style;
 
-fn el(tag: &str, style: &[(&str, &[&str])], args: &[&str], children: Vec<Resolved>) -> Resolved {
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use tree::Style;
+
+static NEXT_ID: AtomicUsize = AtomicUsize::new(1000);
+
+fn el(tag: &str, style: &[(&str, &[&str])], args: &[&str], children: Vec<Element>) -> Element {
     let mut s = Style::new();
     for (k, v) in style {
         s.insert(k.to_string(), v.iter().map(|x| x.to_string()).collect());
     }
-    Resolved {
+    Element {
         tag: tag.to_string(),
         style: s,
         args: args.iter().map(|x| x.to_string()).collect(),
         children,
+        id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
     }
 }
 
@@ -18,7 +24,7 @@ fn texts(rows: &[Row]) -> Vec<String> {
     rows.iter().map(row_text).collect()
 }
 
-fn lay(roots: &[Resolved], width: usize) -> Page {
+fn lay(roots: &[Element], width: usize) -> Page {
     layout_all(roots, width, &Form::default()).unwrap()
 }
 
@@ -280,67 +286,227 @@ fn header(tag: &str) -> Span {
 }
 
 #[test]
-fn h1_is_uppercase_with_three_marks() {
-    let s = header("h1");
-    assert_eq!(s.text, "=== HI THERE ===");
-    assert!(!s.bold && !s.underline);
+fn headers_have_no_marks() {
+    for t in ["h1", "h2", "h3", "h4", "h5", "h6"] {
+        let h = el(t, &[], &["Hi there"], vec![]);
+        let rows = lay(&[h], 30).rows;
+        assert_eq!(rows.len(), 1);
+        assert!(
+            !row_text(&rows[0]).contains('='),
+            "{}: {:?}",
+            t,
+            row_text(&rows[0])
+        );
+    }
 }
 
 #[test]
-fn h2_is_uppercase() {
-    let s = header("h2");
-    assert_eq!(s.text, "= HI THERE =");
-    assert!(!s.bold && !s.underline);
+fn headers_differ_in_case_boldness_and_underline() {
+    let table = [
+        ("h1", "HI THERE", true, false),
+        ("h2", "HI THERE", true, false),
+        ("h3", "HI THERE", false, false),
+        ("h4", "Hi there", true, false),
+        ("h5", "Hi there", true, true),
+        ("h6", "Hi there", false, true),
+    ];
+    for (tag, text, bold, underline) in table {
+        let s = header(tag);
+        assert_eq!(s.text, text, "{}", tag);
+        assert_eq!((s.bold, s.underline), (bold, underline), "{}", tag);
+        assert_eq!(s.scale, 1, "{} is not scaled without scale_headers", tag);
+    }
+    // No two headers look the same: (case, bold, underline) are pairwise different
+    // except where the font size tells them apart (h1/h2 differ only in size).
+    let looks: Vec<_> = table
+        .iter()
+        .map(|(_, t, b, u)| (!t.chars().any(char::is_lowercase), *b, *u))
+        .collect();
+    assert_eq!(
+        looks.iter().filter(|l| **l == (true, true, false)).count(),
+        2
+    );
 }
 
 #[test]
-fn h3_is_bold_and_uppercase() {
-    let s = header("h3");
-    assert_eq!(s.text, "= HI THERE =");
-    assert!(s.bold && !s.underline);
-}
-
-#[test]
-fn h4_is_bold() {
-    let s = header("h4");
-    assert_eq!(s.text, "= Hi there =");
-    assert!(s.bold && !s.underline);
-}
-
-#[test]
-fn h5_is_bold_and_underlined() {
-    let s = header("h5");
-    assert_eq!(s.text, "= Hi there =");
-    assert!(s.bold && s.underline);
-}
-
-#[test]
-fn h6_is_underlined() {
-    let s = header("h6");
-    assert_eq!(s.text, "= Hi there =");
-    assert!(!s.bold && s.underline);
-}
-
-#[test]
-fn header_marks_are_not_part_of_the_copy_text() {
+fn header_copy_text_is_the_displayed_text() {
     let h = el("h1", &[], &["Hi"], vec![]);
     let rows = lay(&[h], 30).rows;
     assert_eq!(rows[0].info.as_ref().unwrap().text, "HI");
 }
 
 #[test]
-fn header_wraps_inside_its_marks() {
+fn header_wraps_at_the_full_width() {
     let h = el("h4", &[], &["aaa bbb ccc"], vec![]);
-    let rows = lay(&[h], 9).rows;
-    // Width 9 leaves 5 cells between the marks, so each word gets its own line.
+    let rows = lay(&[h], 7).rows;
     assert_eq!(
         texts(&rows),
-        vec![
-            "= aaa =  ".to_string(),
-            "= bbb =  ".to_string(),
-            "= ccc =  ".to_string()
-        ]
+        vec!["aaa bbb".to_string(), "ccc    ".to_string()]
     );
+}
+
+fn lay_scaled(roots: &[Element], width: usize) -> Page {
+    layout_all_with(
+        roots,
+        width,
+        &Form::default(),
+        LayoutOptions {
+            viewport_rows: None,
+            scale_headers: true,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn scaled_headers_take_scale_cells_per_char_and_scale_rows() {
+    let h = el("h1", &[], &["ab"], vec![]);
+    let rows = lay_scaled(&[h], 12).rows;
+    // size 3: each char is 3 cells wide, the line is 3 rows tall.
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].spans[0].text, "AB");
+    assert_eq!(rows[0].spans[0].scale, 3);
+    assert_eq!(rows[0].spans[0].cells(), 6);
+    assert!(rows.iter().all(|r| r.width() == 12));
+    assert!(!rows[0].cont && rows[1].cont && rows[2].cont);
+    assert!(rows[1].info.is_none() && rows[2].info.is_none());
+    assert_eq!(rows[0].info.as_ref().unwrap().cols, (0, 6));
+    assert_eq!(rows[0].info.as_ref().unwrap().text, "AB");
+}
+
+#[test]
+fn scaled_headers_wrap_by_scaled_width() {
+    let h = el("h2", &[], &["aa bb cc"], vec![]);
+    // size 2 in 8 cells: 4 chars per line.
+    let rows = lay_scaled(&[h], 8).rows;
+    let lines: Vec<String> = rows
+        .iter()
+        .filter(|r| !r.cont)
+        .map(|r| r.spans[0].text.clone())
+        .collect();
+    assert_eq!(lines, vec!["AA", "BB", "CC"]);
+    assert_eq!(rows.len(), 6);
+}
+
+#[test]
+fn scaling_never_exceeds_the_available_width() {
+    let h = el("h1", &[], &["abc"], vec![]);
+    let rows = lay_scaled(&[h], 2).rows;
+    assert!(
+        rows.iter().all(|r| r.width() == 2),
+        "{:?}",
+        rows.iter().map(|r| r.width()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn scaled_headers_align_and_pad_like_text() {
+    let h = el(
+        "h2",
+        &[("align", &["middle"]), ("bcolor", &["red"])],
+        &["ab"],
+        vec![],
+    );
+    let rows = lay_scaled(&[h], 12).rows;
+    // 4 cells wide in 12: 4 on each side.
+    assert_eq!(rows[0].info.as_ref().unwrap().cols, (4, 8));
+    assert!(rows.iter().all(|r| r.width() == 12));
+}
+
+// ── viewport: the document is as large as the screen ───────────────
+
+fn lay_view(roots: &[Element], width: usize, rows: usize) -> Page {
+    layout_all_with(
+        roots,
+        width,
+        &Form::default(),
+        LayoutOptions {
+            viewport_rows: Some(rows),
+            scale_headers: false,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn top_level_max_height_fills_the_screen() {
+    let b = el(
+        "box",
+        &[("size", &["max"]), ("bcolor", &["blue"])],
+        &[],
+        vec![el("p", &[], &["hi"], vec![])],
+    );
+    let page = lay_view(&[b], 10, 6);
+    assert_eq!(page.rows.len(), 6);
+    assert!(page.rows.iter().all(|r| r.width() == 10));
+    assert!(
+        page.rows
+            .iter()
+            .all(|r| r.spans.iter().all(|s| s.bg == Some(BLUE)))
+    );
+}
+
+#[test]
+fn max_height_fills_only_what_is_left_after_earlier_elements() {
+    let b = el(
+        "box",
+        &[("size", &["max"]), ("bcolor", &["blue"])],
+        &[],
+        vec![],
+    );
+    let page = lay_view(&[el("p", &[], &["top"], vec![]), b], 10, 6);
+    assert_eq!(page.rows.len(), 6);
+    assert_eq!(row_text(&page.rows[0]).trim_end(), "top");
+}
+
+#[test]
+fn max_height_never_cuts_long_content() {
+    let kids: Vec<Element> = (0..10)
+        .map(|i| el("p", &[], &[&format!("line {}", i)], vec![]))
+        .collect();
+    let b = el("box", &[("size", &["max"])], &[], kids);
+    let page = lay_view(&[b], 10, 4);
+    assert_eq!(page.rows.len(), 10);
+}
+
+#[test]
+fn without_a_viewport_max_height_is_content_height() {
+    let b = el(
+        "box",
+        &[("size", &["max"])],
+        &[],
+        vec![el("p", &[], &["hi"], vec![])],
+    );
+    assert_eq!(lay(&[b], 10).rows.len(), 1);
+}
+
+#[test]
+fn min_height_elements_do_not_grow_with_the_viewport() {
+    let page = lay_view(&[el("p", &[], &["hi"], vec![])], 10, 6);
+    assert_eq!(page.rows.len(), 1);
+}
+
+#[test]
+fn rows_carry_href_and_node_ids() {
+    let l = el("link", &[], &["https://x.test/a&amp;b", "Go"], vec![]);
+    let b = el("button", &[], &["Run"], vec![]);
+    let (lid, bid) = (l.id, b.id);
+    let page = lay(&[l, b], 20);
+    let li = page.rows[0].info.as_ref().unwrap();
+    assert_eq!(li.href.as_deref(), Some("https://x.test/a&b"));
+    assert_eq!(li.node, lid);
+    let bi = page.rows[1].info.as_ref().unwrap();
+    assert_eq!(bi.href, None);
+    assert_eq!(bi.node, bid);
+}
+
+#[test]
+fn inputs_remember_their_node() {
+    let i = el("input", &[], &["name", "v"], vec![]);
+    let id = i.id;
+    let page = lay(&[i], 20);
+    assert_eq!(page.inputs[0].node, id);
+    assert_eq!(page.rows[0].info.as_ref().unwrap().node, id);
 }
 
 // ── Row metadata used by the cursor ─────────────────────────────────

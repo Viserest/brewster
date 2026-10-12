@@ -3,7 +3,7 @@
 let body = box
   .bcolor:#181818
   .fcolor:white
-  .pad:2,1
+  .pad:1,0,1,2
   .before:box {
     link https://example.com "Home Page"
     link https://example.com/projects "Projects Page"
@@ -15,7 +15,10 @@ let body = box
 box.extends:body {
   h1.align-x:middle "Hello, pseudo"
   h2 "Second header"
+  h3 "Third header"
+  h4 "Fourth header"
   h5 "Fifth header"
+  h6 "Sixth header"
   p.fcolor:yellow "Yellow text"
   p.bcolor:black.fcolor:white "Black background, white foreground"
   pre r#"
@@ -30,6 +33,13 @@ fn main() {
     h1 "Admin Login"
     input.size:20,min "name" "John Doe the third of his name"
     input.protected "password" "hunter2"
-    button "Submit this"
+    button.onclick:greet("friend") "Submit this"
   }
+  p.fcolor:green.id:out "Press the button (enter or click) to run its function."
+  link "plugins.cre" "A page that installs plugins"
+}
+
+// A button runs this function: `self` is the clicked element.
+fn greet(self, who) {
+  root.tree.query("#out").unwrap().set_text("Hello, {who}!")
 }

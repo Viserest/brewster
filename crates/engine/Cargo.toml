@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 cursor = { path = "../cursor" }
-lexer = { path = "../lexer" }
-parser = { path = "../parser" }
-resolver = { path = "../resolver" }
 layout = { path = "../layout" }
+location = { path = "../location" }
+plugin = { path = "../plugin" }
+script = { path = "../script" }
+tree = { path = "../tree" }

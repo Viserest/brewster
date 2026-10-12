@@ -1,4 +1,4 @@
-//! Layout: turns a resolved tree into rows of styled text spans (cell units).
+//! Layout: turns a document tree into rows of styled text spans (cell units).
 //! Output is renderer-agnostic; apps decide how to paint it.
 //!
 //! Every element is a box, outside in: margin, border, pad, content. `size` is the
@@ -7,9 +7,10 @@
 //! fills the parent instead. `align` / `align-x` place an element inside its parent's
 //! content area (children inherit it) and align the text inside a wider text element.
 
-use resolver::Resolved;
 use std::collections::HashMap;
-use style::{border, decode, first, parse_align, parse_color, size, spacing, Align, Dim, Size};
+
+use style::{Align, Dim, Size, border, decode, first, parse_align, parse_color, size, spacing};
+use tree::Element;
 
 pub use style::Rgb;
 
@@ -20,6 +21,17 @@ pub struct Span {
     pub bg: Option<Rgb>,
     pub bold: bool,
     pub underline: bool,
+    /// Font size multiplier (headers). A scaled span covers `chars * scale` cells and
+    /// `scale` rows: the row it is on plus `scale - 1` continuation rows. Only produced
+    /// when [`LayoutOptions::scale_headers`] is set; terminals cannot draw it.
+    pub scale: u8,
+}
+
+impl Span {
+    /// Width in cells.
+    pub fn cells(&self) -> usize {
+        self.text.chars().count() * self.scale.max(1) as usize
+    }
 }
 
 /// What kind of element a row's text belongs to.
@@ -48,6 +60,10 @@ pub struct LineInfo {
     pub input: Option<usize>,
     /// Column of the text caret when this input is being edited and the caret is on this row.
     pub caret: Option<usize>,
+    /// Where a link points (entities decoded).
+    pub href: Option<String>,
+    /// Id of the tree node this row belongs to (`tree::Element::id`).
+    pub node: usize,
 }
 
 /// One line of output. Rows are as wide as the requested width.
@@ -55,12 +71,14 @@ pub struct LineInfo {
 pub struct Row {
     pub spans: Vec<Span>,
     pub info: Option<LineInfo>,
+    /// A continuation of the scaled text on the row above: it only carries background.
+    pub cont: bool,
 }
 
 impl Row {
     /// Visible width in cells.
     pub fn width(&self) -> usize {
-        self.spans.iter().map(|s| s.text.chars().count()).sum()
+        self.spans.iter().map(|s| s.cells()).sum()
     }
 
     fn shifted(mut self, dx: usize) -> Row {
@@ -98,6 +116,8 @@ pub struct InputLayout {
     pub prefix: usize,
     pub segs: Vec<(usize, usize)>,
     pub protected: bool,
+    /// Id of the input's tree node.
+    pub node: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -107,13 +127,34 @@ pub struct Page {
     pub inputs: Vec<InputLayout>,
 }
 
+/// How a page is fitted to the screen.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LayoutOptions {
+    /// Height of the screen in rows. The document is `max` wide and high, so a top-level
+    /// element with `size:max` (or `max` height) fills the rows left on the screen; it
+    /// never gets shorter than its content, so long pages still scroll.
+    pub viewport_rows: Option<usize>,
+    /// Draw header font sizes by scaling (GUI). Without it headers differ in boldness,
+    /// underline and case only.
+    pub scale_headers: bool,
+}
+
 /// Lays out one element into rows that are `width` cells wide.
-pub fn layout(root: &Resolved, width: usize) -> Result<Vec<Row>, String> {
+pub fn layout(root: &Element, width: usize) -> Result<Vec<Row>, String> {
     Ok(layout_all(std::slice::from_ref(root), width, &Form::default())?.rows)
 }
 
 /// Lays out top-level elements in order. Focus and input numbering run across all of them.
-pub fn layout_all(roots: &[Resolved], width: usize, form: &Form) -> Result<Page, String> {
+pub fn layout_all(roots: &[Element], width: usize, form: &Form) -> Result<Page, String> {
+    layout_all_with(roots, width, form, LayoutOptions::default())
+}
+
+pub fn layout_all_with(
+    roots: &[Element],
+    width: usize,
+    form: &Form,
+    opts: LayoutOptions,
+) -> Result<Page, String> {
     let width = width.max(1);
     let ctx = Ctx {
         fg: None,
@@ -123,14 +164,21 @@ pub fn layout_all(roots: &[Resolved], width: usize, form: &Form) -> Result<Page,
     let mut ids = Ids::default();
     let mut items: Vec<Item> = Vec::new();
     for r in roots {
-        items.push(build(r, ctx, &mut ids, form)?);
+        items.push(build(r, ctx, &mut ids, form, opts)?);
     }
     let mut st = State {
         inputs: vec![InputLayout::default(); ids.input],
     };
     let mut rows: Vec<Row> = Vec::new();
     for it in &items {
-        let blk = place(it, width, None, &mut st);
+        let remaining = opts.viewport_rows.map(|v| v.saturating_sub(rows.len()));
+        let mut blk = place(it, width, None, &mut st);
+        if let (Some(rem), Dim::Max) = (remaining, it.size.h) {
+            // Fill the rest of the screen, but never cut the content short.
+            if blk.rows.len() < rem {
+                blk = place(it, width, Some(rem), &mut st);
+            }
+        }
         let gap = width.saturating_sub(blk.w);
         let left = offset(it.ax, gap);
         for r in blk.rows {
@@ -143,7 +191,7 @@ pub fn layout_all(roots: &[Resolved], width: usize, form: &Form) -> Result<Page,
     })
 }
 
-// ───────────────────────── Build: resolved tree -> items ─────────────────────────
+// ───────────────────────── Build: tree -> items ─────────────────────────
 
 #[derive(Clone, Copy)]
 struct Ctx {
@@ -202,13 +250,16 @@ struct TextBody {
     underline: bool,
     /// `pre`: no wrapping, no whitespace collapsing, alignment fixed to the start.
     verbatim: bool,
-    /// Text added before / after every visual line (header `=` marks).
-    deco: Option<(String, String)>,
+    /// Font size multiplier; 1 unless headers are scaled.
+    scale: usize,
     focus: Option<usize>,
+    href: Option<String>,
+    node: usize,
 }
 
 struct InputBody {
     id: usize,
+    node: usize,
     focus: usize,
     name: String,
     protected: bool,
@@ -225,12 +276,15 @@ struct Look {
     bold: bool,
     underline: bool,
     verbatim: bool,
+    scale: usize,
     focus: Option<usize>,
     input: Option<usize>,
+    href: Option<String>,
+    node: usize,
 }
 
 impl TextBody {
-    fn new(kind: Kind, text: String, fg: Option<Rgb>) -> TextBody {
+    fn new(kind: Kind, text: String, fg: Option<Rgb>, node: usize) -> TextBody {
         TextBody {
             kind,
             text,
@@ -239,8 +293,10 @@ impl TextBody {
             bold: false,
             underline: false,
             verbatim: false,
-            deco: None,
+            scale: 1,
             focus: None,
+            href: None,
+            node,
         }
     }
 
@@ -251,8 +307,11 @@ impl TextBody {
             bold: self.bold,
             underline: self.underline,
             verbatim: self.verbatim,
+            scale: 1,
             focus: self.focus,
             input: None,
+            href: self.href.clone(),
+            node: self.node,
         }
     }
 
@@ -265,10 +324,6 @@ impl TextBody {
                 .max()
                 .unwrap_or(0);
         }
-        let deco = self
-            .deco
-            .as_ref()
-            .map_or(0, |(a, b)| a.chars().count() + b.chars().count());
         let widest = self
             .text
             .split('\n')
@@ -279,7 +334,7 @@ impl TextBody {
             })
             .max()
             .unwrap_or(0);
-        widest + deco
+        widest * self.scale
     }
 }
 
@@ -304,8 +359,11 @@ impl InputBody {
             bold: false,
             underline: false,
             verbatim: false,
+            scale: 1,
             focus: Some(self.focus),
             input: Some(self.id),
+            href: None,
+            node: self.node,
         }
     }
 }
@@ -325,19 +383,27 @@ impl Item {
     }
 }
 
-/// `h1`..`h6`: (uppercase, bold, underline, number of `=` on each side).
+/// `h1`..`h6`: (uppercase, bold, underline, font size). Headers differ in boldness,
+/// underline and size (size only where the renderer can scale); the upper case of the
+/// big ones keeps them apart in a terminal too.
 fn heading_style(tag: &str) -> (bool, bool, bool, usize) {
     match tag {
-        "h1" => (true, false, false, 3),
-        "h2" => (true, false, false, 1),
-        "h3" => (true, true, false, 1),
+        "h1" => (true, true, false, 3),
+        "h2" => (true, true, false, 2),
+        "h3" => (true, false, false, 2),
         "h4" => (false, true, false, 1),
         "h5" => (false, true, true, 1),
         _ => (false, false, true, 1),
     }
 }
 
-fn build(r: &Resolved, ctx: Ctx, ids: &mut Ids, form: &Form) -> Result<Item, String> {
+fn build(
+    r: &Element,
+    ctx: Ctx,
+    ids: &mut Ids,
+    form: &Form,
+    opts: LayoutOptions,
+) -> Result<Item, String> {
     let st = &r.style;
     let margin = spacing(st, "margin")?;
     let pad = spacing(st, "pad")?;
@@ -366,13 +432,13 @@ fn build(r: &Resolved, ctx: Ctx, ids: &mut Ids, form: &Form) -> Result<Item, Str
         let mut kids: Vec<Item> = Vec::new();
         let mut nat = 0usize;
         for c in &r.children {
-            let k = build(c, child_ctx, ids, form)?;
+            let k = build(c, child_ctx, ids, form, opts)?;
             nat = nat.max(k.outer_nat());
             kids.push(k);
         }
         (Body::Box(kids), nat)
     } else {
-        build_leaf(r, fg, ctx, ids, form)?
+        build_leaf(r, fg, ctx, ids, form, opts)?
     };
 
     Ok(Item {
@@ -390,11 +456,12 @@ fn build(r: &Resolved, ctx: Ctx, ids: &mut Ids, form: &Form) -> Result<Item, Str
 }
 
 fn build_leaf(
-    r: &Resolved,
+    r: &Element,
     fg: Option<Rgb>,
     ctx: Ctx,
     ids: &mut Ids,
     form: &Form,
+    opts: LayoutOptions,
 ) -> Result<(Body, usize), String> {
     let st = &r.style;
     let a0 = r.args.first().cloned().unwrap_or_default();
@@ -414,24 +481,31 @@ fn build_leaf(
 
     match r.tag.as_str() {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-            let (upper, bold, underline, eq) = heading_style(&r.tag);
+            let (upper, bold, underline, size) = heading_style(&r.tag);
             let mut s = decode(&a0);
             if upper {
                 s = s.to_uppercase();
             }
-            let bar = "=".repeat(eq);
-            let mut t = TextBody::new(Kind::Text, s, text_fg(None));
+            let mut t = TextBody::new(Kind::Text, s, text_fg(None), r.id);
             t.bold = bold;
             t.underline = underline;
-            t.deco = Some((format!("{} ", bar), format!(" {}", bar)));
+            if opts.scale_headers {
+                t.scale = size;
+            }
             text(t)
         }
-        "p" | "span" => text(TextBody::new(Kind::Text, decode(&a0), text_fg(None))),
+        "p" | "span" => text(TextBody::new(Kind::Text, decode(&a0), text_fg(None), r.id)),
         "link" => {
             let label = decode(r.args.get(1).unwrap_or(&a0));
-            let mut t = TextBody::new(Kind::Link, label.clone(), text_fg(Some(Rgb(80, 170, 255))));
+            let mut t = TextBody::new(
+                Kind::Link,
+                label.clone(),
+                text_fg(Some(Rgb(80, 170, 255))),
+                r.id,
+            );
             t.underline = true;
             t.copy = Some(label);
+            t.href = Some(decode(&a0));
             t.focus = Some(ids.next_focus());
             text(t)
         }
@@ -441,7 +515,7 @@ fn build_leaf(
             } else {
                 decode(&a0)
             };
-            let mut t = TextBody::new(Kind::Button, format!("[ {} ]", label), text_fg(None));
+            let mut t = TextBody::new(Kind::Button, format!("[ {} ]", label), text_fg(None), r.id);
             t.bold = true;
             t.copy = Some(label);
             t.focus = Some(ids.next_focus());
@@ -450,7 +524,7 @@ fn build_leaf(
         "pre" => {
             let s = a0.strip_prefix('\n').unwrap_or(a0.as_str());
             let s = s.strip_suffix('\n').unwrap_or(s);
-            let mut t = TextBody::new(Kind::Pre, s.to_string(), text_fg(None));
+            let mut t = TextBody::new(Kind::Pre, s.to_string(), text_fg(None), r.id);
             t.verbatim = true;
             text(t)
         }
@@ -468,6 +542,7 @@ fn build_leaf(
             };
             let b = InputBody {
                 id,
+                node: r.id,
                 focus,
                 name: decode(&a0),
                 protected: st.contains_key("protected"),
@@ -569,7 +644,8 @@ struct Line {
     caret: Option<usize>,
 }
 
-fn text_lines(t: &TextBody, cw: usize) -> Vec<Line> {
+/// `scale` is the font size the text is drawn at: a line holds `cw / scale` chars.
+fn text_lines(t: &TextBody, cw: usize, scale: usize) -> Vec<Line> {
     if t.verbatim {
         return t
             .text
@@ -584,16 +660,11 @@ fn text_lines(t: &TextBody, cw: usize) -> Vec<Line> {
             })
             .collect();
     }
-    let (pre, suf) = match &t.deco {
-        Some((a, b)) => (a.as_str(), b.as_str()),
-        None => ("", ""),
-    };
-    let deco = pre.chars().count() + suf.chars().count();
-    let inner = cw.saturating_sub(deco).max(1);
+    let inner = (cw / scale.max(1)).max(1);
     wrap(&t.text, inner)
         .into_iter()
         .map(|l| {
-            let text: String = format!("{}{}{}", pre, l, suf).chars().take(cw).collect();
+            let text: String = l.chars().take(inner).collect();
             let copy = t.copy.clone().unwrap_or(l);
             Line {
                 text,
@@ -634,6 +705,7 @@ fn input_lines(b: &InputBody, cw: usize) -> (Vec<Line>, InputLayout) {
             prefix,
             segs,
             protected: b.protected,
+            node: b.node,
         },
     )
 }
@@ -653,6 +725,7 @@ fn space(n: usize, bg: Option<Rgb>) -> Span {
         bg,
         bold: false,
         underline: false,
+        scale: 1,
     }
 }
 
@@ -665,7 +738,11 @@ fn push_space(spans: &mut Vec<Span>, n: usize, bg: Option<Rgb>) {
 fn blank(w: usize, bg: Option<Rgb>) -> Row {
     let mut spans = Vec::new();
     push_space(&mut spans, w, bg);
-    Row { spans, info: None }
+    Row {
+        spans,
+        info: None,
+        cont: false,
+    }
 }
 
 fn pad_row(row: Row, left: usize, right: usize, bg: Option<Rgb>) -> Row {
@@ -676,6 +753,7 @@ fn pad_row(row: Row, left: usize, right: usize, bg: Option<Rgb>) -> Row {
     Row {
         spans,
         info: row.info,
+        cont: row.cont,
     }
     .shifted(left)
 }
@@ -687,6 +765,7 @@ fn edge(it: &Item, text: String) -> Span {
         bg: it.bg,
         bold: false,
         underline: false,
+        scale: 1,
     }
 }
 
@@ -710,6 +789,7 @@ fn frame_row(it: &Item, inner: Row) -> Row {
     Row {
         spans,
         info: inner.info,
+        cont: inner.cont,
     }
     .shifted(ml + bl + pl)
 }
@@ -731,23 +811,29 @@ fn horizontal(it: &Item, cw: usize, left: &str, right: &str) -> Row {
     push_space(&mut spans, ml, it.outer_bg);
     spans.push(edge(it, text));
     push_space(&mut spans, mr, it.outer_bg);
-    Row { spans, info: None }
+    Row {
+        spans,
+        info: None,
+        cont: false,
+    }
 }
 
 fn leaf_row(it: &Item, cw: usize, line: Line, look: &Look) -> Row {
-    let len = line.text.chars().count();
+    let chars = line.text.chars().count();
+    let len = chars * look.scale;
     let gap = cw.saturating_sub(len);
     let a = if look.verbatim { Align::Start } else { it.ax };
     let left = offset(a, gap);
     let mut spans = Vec::new();
     push_space(&mut spans, left, it.bg);
-    if len > 0 {
+    if chars > 0 {
         spans.push(Span {
             text: line.text,
             fg: look.fg,
             bg: it.bg,
             bold: look.bold,
             underline: look.underline,
+            scale: look.scale as u8,
         });
     }
     push_space(&mut spans, gap - left, it.bg);
@@ -760,12 +846,16 @@ fn leaf_row(it: &Item, cw: usize, line: Line, look: &Look) -> Row {
             focus: look.focus,
             input: look.input,
             caret: line.caret.map(|c| left + c),
+            href: look.href.clone(),
+            node: look.node,
         }),
+        cont: false,
     }
 }
 
 /// Turns lines into rows. When the height is fixed and shorter than the text, the window
-/// follows the caret (or shows the top when nothing is being edited).
+/// follows the caret (or shows the top when nothing is being edited). A scaled line is
+/// followed by `scale - 1` continuation rows.
 fn leaf_rows(
     it: &Item,
     cw: usize,
@@ -776,18 +866,22 @@ fn leaf_rows(
     let mut start = 0usize;
     let mut count = lines.len();
     if let Some(ch) = fixed_ch {
-        if lines.len() > ch {
+        if look.scale == 1 && lines.len() > ch {
             let caret_line = lines.iter().position(|l| l.caret.is_some());
             start = caret_line.map_or(0, |i| (i + 1).saturating_sub(ch));
             count = ch;
         }
     }
-    lines
-        .into_iter()
-        .skip(start)
-        .take(count)
-        .map(|l| leaf_row(it, cw, l, look))
-        .collect()
+    let mut out = Vec::new();
+    for l in lines.into_iter().skip(start).take(count) {
+        out.push(leaf_row(it, cw, l, look));
+        for _ in 1..look.scale {
+            let mut r = blank(cw, it.bg);
+            r.cont = true;
+            out.push(r);
+        }
+    }
+    out
 }
 
 /// Lays out `it` inside `aw` columns (and `ah` rows when the parent's height is known).
@@ -831,7 +925,11 @@ fn place(it: &Item, aw: usize, ah: Option<usize>, st: &mut State) -> Block {
             }
         }
         Body::Text(t) => {
-            inner = leaf_rows(it, cw, text_lines(t, cw), &t.look(), fixed_ch);
+            // Never scale beyond the width available.
+            let scale = t.scale.clamp(1, cw.max(1));
+            let mut look = t.look();
+            look.scale = scale;
+            inner = leaf_rows(it, cw, text_lines(t, cw, scale), &look, fixed_ch);
         }
         Body::Input(b) => {
             let (lines, il) = input_lines(b, cw);
