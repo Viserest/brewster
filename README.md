@@ -2,13 +2,14 @@
 
 A web browser written in Rust, driven by a Rust/Lua-like language in `.cre` files which create the structures, styles and scripts.
 
+Ideas came from these videos:\
 Facedev:
-https://www.youtube.com/watch?v=iJsH7AdLmUA
-https://www.youtube.com/watch?v=37ISfJ2NSXQ
-https://www.youtube.com/watch?v=qiOtinFFfk8
+- https://www.youtube.com/watch?v=iJsH7AdLmUA
+- https://www.youtube.com/watch?v=37ISfJ2NSXQ
+- https://www.youtube.com/watch?v=qiOtinFFfk8
 
 Tsoding:
-https://www.youtube.com/watch?v=5YSj7mAAQQ0
+- https://www.youtube.com/watch?v=5YSj7mAAQQ0
 
 ## Run
 
