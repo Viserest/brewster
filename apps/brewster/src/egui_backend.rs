@@ -35,8 +35,16 @@ pub fn run(opts: Options) -> Result<(), String> {
         windows: true,
         scaling: true,
     };
-    let (browser, warnings) =
-        launch::open(&opts, &Paths::from_env(), FIRST_GRID.0, FIRST_GRID.1, caps)?;
+    let (host, host_warning) = crate::wasm_host();
+    let (browser, mut warnings) = launch::open_with_host(
+        &opts,
+        &Paths::from_env(),
+        FIRST_GRID.0,
+        FIRST_GRID.1,
+        caps,
+        host,
+    )?;
+    warnings.extend(host_warning);
     for w in warnings {
         eprintln!("warning: {}", w);
     }

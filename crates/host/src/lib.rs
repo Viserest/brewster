@@ -10,9 +10,11 @@
 
 mod native;
 mod session;
+mod wasm;
 
 pub use native::{MapRunner, NativeGuest};
 pub use session::Session;
+pub use wasm::{Instance, MAX_OUTPUT, WasmGuest};
 
 use plugin::Compiler;
 

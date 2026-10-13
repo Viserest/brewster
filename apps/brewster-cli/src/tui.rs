@@ -136,13 +136,16 @@ fn carry_out(out: &mut io::Stdout, app: &mut Browser) -> Result<bool, String> {
 pub fn run(opts: &Options) -> Result<(), String> {
     let (cols, lines) = terminal::size().map_err(io_err)?;
     // The first page is as big as the terminal.
-    let (mut app, warnings) = launch::open(
+    let (host, host_warning) = crate::wasm_host();
+    let (mut app, mut warnings) = launch::open_with_host(
         opts,
         &Paths::from_env(),
         cols as usize,
         lines as usize,
         Capabilities::default(),
+        host,
     )?;
+    warnings.extend(host_warning);
 
     enable_raw_mode().map_err(io_err)?;
     {

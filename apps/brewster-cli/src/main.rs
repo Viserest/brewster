@@ -17,7 +17,25 @@ use std::{
 };
 
 use browser::launch::Options;
-use engine::{DefaultLoader, Host, Url, render_url};
+use engine::{DefaultLoader, Url, render_url};
+
+/// The compiler and wasm engine that load pages. Without the `wasm` feature there is no
+/// engine and the browser says so when a page is opened.
+#[cfg(feature = "wasm")]
+pub(crate) fn wasm_host() -> (engine::Host, Option<String>) {
+    match host_wasmtime::host() {
+        Ok(h) => (h, None),
+        Err(e) => (engine::Host::detect(), Some(format!("no wasm engine: {}", e))),
+    }
+}
+
+#[cfg(not(feature = "wasm"))]
+pub(crate) fn wasm_host() -> (engine::Host, Option<String>) {
+    (
+        engine::Host::detect(),
+        Some("built without the `wasm` feature: pages cannot run".to_string()),
+    )
+}
 
 const USAGE: &str = r#"usage: brewster-cli [OPTIONS] [FILE|URL]...
   Opens the files and addresses as tabs in an interactive viewer. Without any, the last
@@ -86,18 +104,14 @@ fn run() -> Result<(), String> {
     }
 
     // One-shot: load the first page, lay it out once and print it.
-    let p = opts
-        .urls
-        .first()
-        .ok_or("one-shot output needs a FILE or URL")?;
+    let p = opts.urls.first().ok_or("one-shot output needs a FILE or URL")?;
     let url = Url::from_input(p);
     let width = width.or_else(|| terminal_width()).unwrap_or(80);
-    let rows = render_url(
-        &url,
-        width,
-        Rc::new(DefaultLoader::default()),
-        Rc::new(Host::detect()),
-    )?;
+    let (host, warning) = wasm_host();
+    if let Some(w) = warning {
+        eprintln!("warning: {}", w);
+    }
+    let rows = render_url(&url, width, Rc::new(DefaultLoader::default()), Rc::new(host))?;
     print!("{}", print::render(&rows, plain));
     Ok(())
 }

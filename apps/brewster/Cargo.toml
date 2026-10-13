@@ -5,8 +5,10 @@ edition = "2024"
 
 [features]
 # The GUI backend is chosen at compile time. egui is the only one implemented.
-default = ["egui"]
+default = ["egui", "wasm"]
 egui = ["dep:eframe"]
+# The wasm engine (wasmtime) that runs pages.
+wasm = ["dep:host-wasmtime"]
 # Planned backends. Selecting one is a compile error until it is implemented.
 iced = []
 slint = []
@@ -15,4 +17,5 @@ slint = []
 engine = { path = "../../crates/engine" }
 browser = { path = "../../crates/browser" }
 profile = { path = "../../crates/profile" }
+host-wasmtime = { path = "../../crates/host-wasmtime", optional = true }
 eframe = { version = "0.29", optional = true }

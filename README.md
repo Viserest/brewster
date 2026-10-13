@@ -8,22 +8,21 @@ Facedev:
 - https://www.youtube.com/watch?v=37ISfJ2NSXQ
 - https://www.youtube.com/watch?v=qiOtinFFfk8
 
-Tsoding:\
+Tsoding:
 - https://www.youtube.com/watch?v=5YSj7mAAQQ0
 
 ## Run
 
 ```
-cargo run -p brewster -- examples/demo.rs                    # GUI window
-cargo run -p brewster -- examples/demo.wasm                  # Using pre-compiled wasm
-cargo run -p brewster-cli -- examples/demo.rs                # interactive terminal viewer
-cargo run -p brewster-cli -- a.rs b.rs                       # two tabs
-cargo run -p brewster-cli -- --once examples/demo.rs         # print once, with colors
-cargo run -p brewster-cli -- --once --plain examples/demo.rs # print once, without colors
+cargo run -p brewster -- examples/demo.rs                  # GUI window
+cargo run -p brewster-cli -- examples/demo.rs              # interactive terminal viewer
+cargo run -p brewster-cli -- a.rs b.wasm                   # two tabs
+cargo run -p brewster-cli -- --once examples/demo.rs       # print once, with colors
+cargo run -p brewster-cli -- --width 60 --plain examples/demo.rs
 cargo test --workspace
 ```
 
-Requires Rust 1.85+ (edition 2024, resolver 3). The first build downloads `crossterm` and `eframe`; nothing else is fetched from the network, and the `crates/*` libraries use only `std`.
+Requires Rust 1.85+ (edition 2024, resolver 3). The first build downloads `crossterm`, `eframe` and `wasmtime` (the wasm engine, in `crates/host-wasmtime`); the other `crates/*` libraries use only `std`. Both apps have a `wasm` feature, on by default; `--no-default-features` builds without wasmtime, and pages then report that there is no wasm engine. To test everything except the engine without network access: `cargo test --workspace --exclude host-wasmtime`.
 
 A `.rs` page is compiled to wasm by calling `rustc` directly (no cargo, no other crates): the browser needs `rustc`, the `wasm32-unknown-unknown` target and the prebuilt `cre` rlib (`BREWSTER_SDK_DIR`, see `plugin::Compiler::detect`). The result is cached by a hash of the source, the compiler and the SDK. When a page cannot be compiled here, the `.wasm` next to it (same URL, other extension) is requested instead.
 
@@ -171,6 +170,8 @@ A handler gets `root: &Root` (passed in, never global). `root.tree` has `query(s
 
 ### Plugins and applications
 
+A page module runs sandboxed in wasmtime: it is instantiated with no imports (no files, network or clock), every call into it has a fuel budget (an endless loop traps instead of hanging the browser), and its memory is capped (`host_wasmtime::Limits`).
+
 A **plugin** is a page module the browser keeps and runs next to a page. It is one of:
 
 1. `Plugin::Wasm(bytes)`: already compiled, nothing to build;
@@ -186,7 +187,8 @@ crates/
   cre       the page SDK: tag macros, Attr / Color / Pad / Border / InputType, Element, Root, wasm exports
   tree      the live document: nodes you can query, create and append, and the binary format pages are sent in
   plugin    plugins, applications, Uuid, the plugin store, and the rustc -> wasm compiler with its cache
-  host      running page modules: Guest / Runner traits, Session (a page and its plugins), Host
+  host      running page modules: Guest / Runner traits, WasmGuest (the page protocol over any wasm engine), Session (a page and its plugins), Host
+  host-wasmtime  the wasm engine: a Runner on wasmtime, with fuel and memory limits and no imports
   location  urls and loaders (file:, http:)
   style     colors, spacing, alignment, entities
   layout    element snapshot -> rows of styled spans (renderer-agnostic)
@@ -204,14 +206,14 @@ examples/
   banner.rs      a small page that works as a plugin
 ```
 
-Logic lives in `crates/*`; UI lives in `apps/*`. The crates use only `std`; `brewster-cli` uses `crossterm` and `brewster` uses `eframe` (egui).
+Logic lives in `crates/*`; UI lives in `apps/*`. The crates use only `std` (except `host-wasmtime`); `brewster-cli` uses `crossterm` and `brewster` uses `eframe` (egui).
 
 The text language and its `lexer`, `parser` and `script` crates are gone: pages are Rust, so `rustc` is the parser and the type checker, and the `cre` crate builds the live tree (`tree`) with the template rules (`extends`, `before`, `after`). Layout reads a snapshot of it.
 
 ## Known limits
 
 - https is not supported (std has no TLS); http and files work.
-- The wasm engine is not part of this workspace yet: `host::Unavailable` refuses modules with a message, and `host::MapRunner` runs pages compiled into the program (tests and tooling). A `Runner` backed by a wasm interpreter (for example `wasmi`) must be added, and it needs a crate from the network.
+- The wasmtime runner (`crates/host-wasmtime`) was written against the wasmtime 49 documentation and type-checked against a stub of its API, but it has not been compiled or run against the real crate in the environment it was written in (no network). Its own tests (`cargo test -p host-wasmtime`) are the first thing to run. The protocol around it (`host::WasmGuest`) is tested with a fake engine.
 - A `.rs` page needs `rustc`, the `wasm32-unknown-unknown` target and the prebuilt SDK on the computer that opens it; otherwise only `.wasm` pages work.
 - History is part of the profile format but nothing records it yet.
 - The terminal cannot show different font sizes; "new window" is a tab there.

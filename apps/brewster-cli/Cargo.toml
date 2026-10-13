@@ -3,10 +3,16 @@ name = "brewster-cli"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["wasm"]
+# The wasm engine (wasmtime) that runs pages.
+wasm = ["dep:host-wasmtime"]
+
 [dependencies]
 engine = { path = "../../crates/engine" }
 browser = { path = "../../crates/browser" }
 plugin = { path = "../../crates/plugin" }
 profile = { path = "../../crates/profile" }
 viewer = { path = "../../crates/viewer" }
+host-wasmtime = { path = "../../crates/host-wasmtime", optional = true }
 crossterm = "0.28"

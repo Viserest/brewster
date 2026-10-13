@@ -5,7 +5,7 @@ use crate::{Browser, Capabilities};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use engine::{DefaultLoader, Registry};
+use engine::{DefaultLoader, Host, Registry};
 use profile::{Paths, Profile};
 
 /// What the command line asked for.
@@ -87,12 +87,26 @@ impl Options {
 
 /// Opens the profile and builds a browser with its first tabs. Problems that do not stop
 /// the browser (a bad value in the profile file, no home directory) come back as warnings.
+/// Pages are compiled by the environment's `rustc` and refused to run: use
+/// [`open_with_host`] with a wasm engine to run them.
 pub fn open(
     opts: &Options,
     paths: &Paths,
     cols: usize,
     rows: usize,
     caps: Capabilities,
+) -> Result<(Browser, Vec<String>), String> {
+    open_with_host(opts, paths, cols, rows, caps, Host::detect())
+}
+
+/// [`open`] with the compiler and wasm engine that load pages.
+pub fn open_with_host(
+    opts: &Options,
+    paths: &Paths,
+    cols: usize,
+    rows: usize,
+    caps: Capabilities,
+    host: Host,
 ) -> Result<(Browser, Vec<String>), String> {
     let mut warnings = Vec::new();
     let name = opts
@@ -138,10 +152,11 @@ pub fn open(
             Registry::in_memory()
         }
     };
-    let mut b = Browser::new(
+    let mut b = Browser::with_host(
         profile,
         registry,
         Rc::new(DefaultLoader::default()),
+        Rc::new(host),
         cols,
         rows,
     );

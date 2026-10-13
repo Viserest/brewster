@@ -5,7 +5,7 @@
 //! implemented; `iced` and `slint` are reserved names and fail to compile for now.
 //!
 //! ```text
-//! cargo run -p brewster -- examples/demo.cre
+//! cargo run -p brewster -- examples/demo.rs
 //! ```
 
 mod grid;
@@ -26,6 +26,25 @@ compile_error!("the `slint` backend is not implemented yet; use the default `egu
 compile_error!("no GUI backend selected; enable the `egui` feature (it is on by default)");
 
 use browser::launch::{OPTIONS_HELP, Options};
+
+/// The compiler and wasm engine that load pages. Without the `wasm` feature there is no
+/// engine and the browser says so when a page is opened.
+#[cfg(feature = "wasm")]
+pub(crate) fn wasm_host() -> (engine::Host, Option<String>) {
+    match host_wasmtime::host() {
+        Ok(h) => (h, None),
+        Err(e) => (engine::Host::detect(), Some(format!("no wasm engine: {}", e))),
+    }
+}
+
+#[cfg(not(feature = "wasm"))]
+pub(crate) fn wasm_host() -> (engine::Host, Option<String>) {
+    (
+        engine::Host::detect(),
+        Some("built without the `wasm` feature: pages cannot run".to_string()),
+    )
+}
+
 
 const USAGE: &str = r#"usage: brewster [OPTIONS] [FILE|URL]...
   Opens the files and addresses as tabs in a window. Without any, the last session's

@@ -1,0 +1,11 @@
+[package]
+name = "host-wasmtime"
+version = "0.1.0"
+edition = "2024"
+
+# The wasm engine: a `host::Runner` backed by wasmtime. This is the only crate in the
+# workspace that needs anything from the network.
+[dependencies]
+host = { path = "../host" }
+plugin = { path = "../plugin" }
+wasmtime = "49"
