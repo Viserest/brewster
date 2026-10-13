@@ -1,6 +1,6 @@
 //! The set of installed plugins, optionally saved as one file per plugin.
 
-use crate::{AppKey, Plugin, PluginError, Uuid, program_from_bytes};
+use crate::{AppKey, Compiler, Plugin, PluginError, Uuid, is_wasm, module_from_bytes};
 
 use std::{
     fs,
@@ -8,7 +8,6 @@ use std::{
 };
 
 use location::{Loader, Url};
-use parser::Stmt;
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -127,14 +126,9 @@ impl Registry {
                 let abs = base
                     .resolve(&u)
                     .map_err(|e| PluginError::Fetch(format!("{}: {}", u, e)))?;
-                let cache = match loader.load_bytes(&abs) {
-                    Ok(bytes) => {
-                        program_from_bytes(&bytes)?;
-                        Some(bytes)
-                    }
-                    // Offline now: keep the plugin and fetch it on the first page load.
-                    Err(_) => None,
-                };
+                // Only a module is kept now; source is compiled when the plugin first runs.
+                // Offline now: keep the plugin and fetch it on the first page load.
+                let cache = loader.load_bytes(&abs).ok().filter(|b| is_wasm(b));
                 Ok((Plugin::Url(abs.to_string()), cache))
             }
             other => Ok((other, None)),
@@ -250,13 +244,15 @@ impl Registry {
         self.entries.iter().filter(|e| e.key.matches(url)).collect()
     }
 
-    /// The programs to run for a page, in insertion order. A URL plugin is fetched again;
-    /// if that fails the saved copy is used, so pages keep working offline.
-    pub fn programs_for(
+    /// The wasm modules to run for a page, in insertion order. A URL plugin is fetched
+    /// again (and compiled when it is source); if that fails the saved module is used, so
+    /// pages keep working offline.
+    pub fn modules_for(
         &mut self,
         url: &Url,
         loader: &dyn Loader,
-    ) -> Vec<(Uuid, Result<Vec<Stmt>, PluginError>)> {
+        compiler: &Compiler,
+    ) -> Vec<(Uuid, Result<Vec<u8>, PluginError>)> {
         let ids: Vec<Uuid> = self.entries_for(url).iter().map(|e| e.id).collect();
         let mut out = Vec::new();
         for id in ids {
@@ -267,28 +263,26 @@ impl Registry {
                 .expect("id came from entries");
             let result = match self.entries[idx].plugin.clone() {
                 Plugin::Url(u) => {
-                    let fresh = Plugin::fetch(&u, url, loader);
+                    let fresh = Plugin::fetch(&u, url, loader).and_then(|bytes| {
+                        let origin = url.resolve(&u).unwrap_or_else(|_| url.clone());
+                        module_from_bytes(bytes, &origin, loader, compiler)
+                    });
                     match fresh {
-                        Ok(bytes) => match program_from_bytes(&bytes) {
-                            Ok(p) => {
-                                if self.entries[idx].cache.as_deref() != Some(&bytes[..]) {
-                                    self.entries[idx].cache = Some(bytes);
-                                    // Failing to save the cache must not stop the page.
-                                    let _ = self.save(&self.entries[idx]);
-                                }
-                                Ok(p)
+                        Ok(module) => {
+                            if self.entries[idx].cache.as_deref() != Some(&module[..]) {
+                                self.entries[idx].cache = Some(module.clone());
+                                // Failing to save the cache must not stop the page.
+                                let _ = self.save(&self.entries[idx]);
                             }
-                            Err(e) => Err(e),
-                        },
-                        Err(fetch_err) => match &self.entries[idx].cache {
-                            Some(bytes) => program_from_bytes(bytes),
-                            None => Err(fetch_err),
+                            Ok(module)
+                        }
+                        Err(e) => match &self.entries[idx].cache {
+                            Some(module) => Ok(module.clone()),
+                            None => Err(e),
                         },
                     }
                 }
-                other => other
-                    .local_program()
-                    .expect("non-URL plugins carry their code"),
+                other => other.module(url, loader, compiler),
             };
             out.push((id, result));
         }
@@ -310,8 +304,8 @@ fn encode_entry(e: &Entry) -> String {
         e.key.path()
     );
     let body = match &e.plugin {
-        Plugin::Compiled(b) => {
-            s.push_str("kind: compiled\n");
+        Plugin::Wasm(b) => {
+            s.push_str("kind: wasm\n");
             hex(b)
         }
         Plugin::Source(t) => {
@@ -362,10 +356,7 @@ fn decode_entry(text: &str) -> Result<Entry, String> {
         return Err("bad `path`".to_string());
     }
     let (plugin, cache) = match kind.as_deref() {
-        Some("compiled") => (
-            Plugin::Compiled(unhex(body).ok_or("bad compiled body")?),
-            None,
-        ),
+        Some("wasm") => (Plugin::Wasm(unhex(body).ok_or("bad wasm body")?), None),
         Some("source") => (Plugin::Source(body.to_string()), None),
         Some("url") => {
             let cache = if body.trim().is_empty() {

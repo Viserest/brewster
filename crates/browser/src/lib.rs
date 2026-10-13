@@ -15,7 +15,7 @@ pub use viewer::{Key, KeyPress, Mods};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use engine::{Document, Loader, Mode, Registry, Url};
+use engine::{Document, Host, Loader, Mode, Registry, Url};
 use overlay::Overlay;
 use profile::{Profile, SavedTab};
 use settings::Settings;
@@ -112,6 +112,7 @@ pub struct Browser {
     saved_settings: Settings,
     registry: Rc<RefCell<Registry>>,
     loader: Rc<dyn Loader>,
+    host: Rc<Host>,
     tabs: Vec<Tab>,
     active: usize,
     cols: usize,
@@ -139,11 +140,25 @@ fn clip(s: &str, max: usize) -> String {
 }
 
 impl Browser {
-    /// A browser with no tabs yet: call [`Browser::start`].
+    /// A browser with no tabs yet: call [`Browser::start`]. Pages are compiled with the
+    /// `rustc` found in the environment; run them with [`Browser::with_host`] and a wasm
+    /// engine (this build has none).
     pub fn new(
         profile: Profile,
         registry: Registry,
         loader: Rc<dyn Loader>,
+        cols: usize,
+        rows: usize,
+    ) -> Browser {
+        Browser::with_host(profile, registry, loader, Rc::new(Host::detect()), cols, rows)
+    }
+
+    /// Like [`Browser::new`] with the compiler and wasm engine to use for pages.
+    pub fn with_host(
+        profile: Profile,
+        registry: Registry,
+        loader: Rc<dyn Loader>,
+        host: Rc<Host>,
         cols: usize,
         rows: usize,
     ) -> Browser {
@@ -154,6 +169,7 @@ impl Browser {
             saved_settings,
             registry: Rc::new(RefCell::new(registry)),
             loader,
+            host,
             tabs: Vec::new(),
             active: 0,
             cols: cols.max(1),
@@ -269,10 +285,12 @@ impl Browser {
         .collect()
     }
 
-    fn source_for(&self, url: &Url) -> Result<String, String> {
+    /// The page at `url`: one of the browser's own `about:` pages, or a module fetched
+    /// (and compiled when it is source) and run.
+    fn document_for(&self, url: &Url) -> Result<Document, String> {
         if url.scheme() == "about" {
             return match url.path() {
-                "blank" => Ok(String::new()),
+                "blank" => Ok(Document::blank()),
                 "newtab" => {
                     let apps: Vec<String> = self
                         .registry
@@ -281,30 +299,31 @@ impl Browser {
                         .iter()
                         .map(|a| a.to_string())
                         .collect();
-                    Ok(pages::new_tab(&apps, &self.hints()))
+                    let hints = self.hints();
+                    Ok(Document::from_page(url.clone(), move || {
+                        pages::new_tab(&apps, &hints)
+                    }))
                 }
                 other => Err(format!("there is no page about:{}", other)),
             };
         }
-        self.loader.load(url)
+        Document::load(
+            url.clone(),
+            self.registry.clone(),
+            self.loader.clone(),
+            self.host.clone(),
+        )
     }
 
     /// Loads `url` into a ready tab. A page that cannot be loaded becomes an error page, so
     /// the tab always has something to show.
     fn make_tab(&mut self, url: &Url) -> Tab {
         let g = self.geometry();
-        let (doc, notice) = match self.source_for(url).and_then(|src| {
-            Document::load(
-                &src,
-                url.clone(),
-                self.registry.clone(),
-                self.loader.clone(),
-            )
-        }) {
+        let (doc, notice) = match self.document_for(url) {
             Ok(d) => (d, None),
             Err(e) => {
-                let src = pages::error(&url.to_string(), &e);
-                let d = Document::parse(&src).expect("the error page is valid");
+                let (u, m) = (url.to_string(), e.clone());
+                let d = Document::from_page(url.clone(), move || pages::error(&u, &m));
                 (d, Some(e))
             }
         };

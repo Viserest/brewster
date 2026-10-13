@@ -4,9 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+cre = { path = "../cre" }
 cursor = { path = "../cursor" }
+host = { path = "../host" }
 layout = { path = "../layout" }
 location = { path = "../location" }
 plugin = { path = "../plugin" }
-script = { path = "../script" }
 tree = { path = "../tree" }

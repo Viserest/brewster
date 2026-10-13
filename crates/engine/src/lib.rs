@@ -1,7 +1,8 @@
-//! Engine: the whole pipeline (lex -> parse -> run scripts into a node tree -> layout)
-//! behind one type. Apps and the browser depend on this crate only.
+//! Engine: the whole pipeline (fetch -> compile to wasm if needed -> run the page and its
+//! plugins -> element tree -> layout) behind one type. Apps and the browser depend on this
+//! crate only.
 //!
-//! `render_source` is the one-shot path. Interactive code loads a [`Document`] once and
+//! `render_url` is the one-shot path. Interactive code loads a [`Document`] once and
 //! lays it out again whenever the width, the form state or the tree changes.
 
 use std::cell::RefCell;
@@ -12,100 +13,155 @@ pub use cursor::{
     edit::{self, EditKey},
     scroll_into_view,
 };
+pub use host::{Guest, Host, MapRunner, Runner};
 pub use layout::{
     Form, InputLayout, Kind, LayoutOptions, LineInfo, Page, Rgb, Row, Span, row_text,
 };
 pub use location::{DefaultLoader, Loader, Url};
 pub use plugin::Registry;
 
-/// A loaded page: its node tree (built by running the document and the plugins installed
-/// for its application) and the scripts that can change it.
+use host::{NativeGuest, Session};
+
+/// A loaded page: the elements its module built (and its plugins' elements after them),
+/// plus the means to run their click handlers.
 pub struct Document {
-    page: script::Page,
+    url: Url,
+    session: Session,
 }
 
 impl Document {
-    /// Loads `src` as an anonymous page with no plugins (`about:blank`).
-    pub fn parse(src: &str) -> Result<Document, String> {
-        Document::load(
-            src,
-            Url::about("blank"),
-            Rc::new(RefCell::new(Registry::in_memory())),
-            Rc::new(DefaultLoader::default()),
-        )
+    /// A page built in this process: the browser's own pages and tests. It runs no
+    /// plugins.
+    pub fn from_page(url: Url, build: impl FnOnce() -> cre::Element) -> Document {
+        Document::from_guest(url, Box::new(NativeGuest::new(build)))
+            .expect("a page that runs in this process cannot fail")
     }
 
-    /// Loads `src` as the page at `url`. The page runs first, then the plugins of its
-    /// application in insertion order (see `plugin`).
+    /// A page run by any [`Guest`], without plugins.
+    pub fn from_guest(url: Url, guest: Box<dyn Guest>) -> Result<Document, String> {
+        let mut session = Session::new();
+        session.set_page(guest);
+        session.refresh()?;
+        Ok(Document { url, session })
+    }
+
+    /// `about:blank`.
+    pub fn blank() -> Document {
+        Document::from_page(Url::about("blank"), || cre::Element::new(cre::Tag::Box))
+    }
+
+    /// Fetches the page at `url` (wasm, or Rust source that is compiled; see `plugin`) and
+    /// runs it, then the plugins of its application in insertion order.
     pub fn load(
-        src: &str,
         url: Url,
         registry: Rc<RefCell<Registry>>,
         loader: Rc<dyn Loader>,
+        host: Rc<Host>,
     ) -> Result<Document, String> {
-        Ok(Document {
-            page: script::Page::load(src, url, registry, loader)?,
-        })
+        let bytes = loader
+            .load_bytes(&url)
+            .map_err(|e| format!("{}: {}", url, e))?;
+        Document::from_bytes(bytes, url, registry, loader, host)
+    }
+
+    /// Like [`Document::load`] with the page already in hand.
+    pub fn from_bytes(
+        bytes: Vec<u8>,
+        url: Url,
+        registry: Rc<RefCell<Registry>>,
+        loader: Rc<dyn Loader>,
+        host: Rc<Host>,
+    ) -> Result<Document, String> {
+        let module = plugin::module_from_bytes(bytes, &url, &*loader, &host.compiler)
+            .map_err(|e| e.to_string())?;
+        let mut session = Session::new();
+        session.set_page(host.runner.instantiate(&module)?);
+
+        // The plugins to run are fixed before the page runs. The registry is not borrowed
+        // while anything runs.
+        let modules = registry
+            .borrow_mut()
+            .modules_for(&url, &*loader, &host.compiler);
+        for (id, module) in modules {
+            let started = module
+                .map_err(|e| e.to_string())
+                .and_then(|m| host.runner.instantiate(&m));
+            match started {
+                Ok(g) => session.add_plugin(&id.to_string(), g),
+                Err(e) => session.diagnostics.push(format!("plugin {}: {}", id, e)),
+            }
+        }
+        session.refresh()?;
+        Ok(Document { url, session })
     }
 
     /// The text of the first heading (`h1`, else `h2` ...), used as the page's title.
     pub fn title(&self) -> Option<String> {
-        for tag in ["h1", "h2", "h3", "h4", "h5", "h6"] {
-            if let Ok(n) = self.page.root().query(tag) {
-                let t = n.text();
-                let t = t.trim();
-                if !t.is_empty() {
-                    return Some(t.to_string());
+        fn first(es: &[tree::Element], tag: &str) -> Option<String> {
+            for e in es {
+                if e.tag == tag {
+                    let t = e.args.first().map(|s| s.trim()).unwrap_or("");
+                    if !t.is_empty() {
+                        return Some(t.to_string());
+                    }
+                }
+                if let Some(t) = first(&e.children, tag) {
+                    return Some(t);
                 }
             }
+            None
         }
-        None
+        ["h1", "h2", "h3", "h4", "h5", "h6"]
+            .iter()
+            .find_map(|tag| first(self.session.tree(), tag))
     }
 
     pub fn url(&self) -> &Url {
-        &self.page.url
+        &self.url
     }
 
-    /// Plugin problems and `log(...)` output do not stop a page; they are collected here.
+    /// Plugin problems do not stop a page; they are collected here.
     pub fn diagnostics(&self) -> &[String] {
-        &self.page.diagnostics
-    }
-
-    pub fn take_log(&mut self) -> Vec<String> {
-        self.page.take_log()
+        &self.session.diagnostics
     }
 
     /// Lays the page out in `width` cells with the given input values and caret.
     pub fn layout(&self, width: usize, form: &Form, opts: LayoutOptions) -> Result<Page, String> {
-        layout::layout_all_with(&self.page.elements(), width, form, opts)
+        layout::layout_all_with(self.session.tree(), width, form, opts)
     }
 
-    /// Runs the `onclick` function of the element with tree id `node`. Returns whether it
-    /// had one; errors are the script's error message.
+    /// Runs the `onclick` handler of the element with tree id `node`. Returns whether it
+    /// had one. The page is read again afterwards, so call `layout` to see the change.
     pub fn click(&mut self, node: usize) -> Result<bool, String> {
-        let Some(n) = self.page.root().find(node) else {
-            return Ok(false);
-        };
-        if !script::Page::is_clickable(&n) {
-            return Ok(false);
-        }
-        self.page.click(&n)?;
-        Ok(true)
+        self.session.click(node)
     }
 
-    /// Whether the element with tree id `node` has an `onclick` function.
+    /// Whether the element with tree id `node` has an `onclick` handler.
     pub fn is_clickable(&self, node: usize) -> bool {
-        self.page
-            .root()
-            .find(node)
-            .is_some_and(|n| script::Page::is_clickable(&n))
+        self.session.is_clickable(node)
     }
 }
 
-/// Renders source text into rows that are `width` cells wide (no scripts' side effects
-/// survive; plugins are not run).
-pub fn render_source(src: &str, width: usize) -> Result<Vec<Row>, String> {
-    Ok(Document::parse(src)?
+/// Loads the page at `url` and renders it into rows that are `width` cells wide (plugins
+/// are not run).
+pub fn render_url(
+    url: &Url,
+    width: usize,
+    loader: Rc<dyn Loader>,
+    host: Rc<Host>,
+) -> Result<Vec<Row>, String> {
+    let registry = Rc::new(RefCell::new(Registry::in_memory()));
+    Ok(Document::load(url.clone(), registry, loader, host)?
+        .layout(width, &Form::default(), LayoutOptions::default())?
+        .rows)
+}
+
+/// Renders a page built in this process (see [`Document::from_page`]).
+pub fn render_page(
+    build: impl FnOnce() -> cre::Element,
+    width: usize,
+) -> Result<Vec<Row>, String> {
+    Ok(Document::from_page(Url::about("blank"), build)
         .layout(width, &Form::default(), LayoutOptions::default())?
         .rows)
 }

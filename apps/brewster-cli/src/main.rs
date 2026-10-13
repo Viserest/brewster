@@ -11,11 +11,13 @@ mod tui;
 
 use std::{
     env,
-    io::{self, IsTerminal, Read},
+    io::{self, IsTerminal},
+    path::Path,
+    rc::Rc,
 };
 
 use browser::launch::Options;
-use engine::{DefaultLoader, Loader, Url, render_source};
+use engine::{DefaultLoader, Host, Url, render_url};
 
 const USAGE: &str = r#"usage: brewster-cli [OPTIONS] [FILE|URL]...
   Opens the files and addresses as tabs in an interactive viewer. Without any, the last
@@ -26,10 +28,10 @@ const USAGE: &str = r#"usage: brewster-cli [OPTIONS] [FILE|URL]...
 Options:
   --once       print the first FILE once with colors and exit
   --plain      print the first FILE once without colors and exit
-  --compile    compile the first FILE as a plugin and print it as hex (for Plugin::compiled)
+  --compile    compile the first FILE (a .rs page) to a .wasm module beside it and exit
   --width N    layout width for one-shot output (default: terminal width, or 80)
 {}
-  stdin is read when no FILE is given and the output is not a terminal (one-shot)"#;
+  One-shot output needs a FILE or URL (a .rs page or a .wasm module)"#;
 
 fn run() -> Result<(), String> {
     let mut width: Option<usize> = None;
@@ -70,12 +72,10 @@ fn run() -> Result<(), String> {
     if compile {
         let p = opts.urls.first().ok_or("--compile needs a FILE")?;
         let src = std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {}", p, e))?;
-        let plugin::Plugin::Compiled(bytes) =
-            plugin::Plugin::compile(&src).map_err(|e| e.to_string())?
-        else {
-            return Err("compile produced no bytes".to_string());
-        };
-        println!("{}", plugin::hex(&bytes));
+        let wasm = plugin::Compiler::detect().compile(&src)?;
+        let out = Path::new(p).with_extension("wasm");
+        std::fs::write(&out, wasm).map_err(|e| format!("cannot write {}: {}", out.display(), e))?;
+        println!("{}", out.display());
         return Ok(());
     }
 
@@ -85,24 +85,19 @@ fn run() -> Result<(), String> {
         return tui::run(&opts);
     }
 
-    // One-shot: render the first file (or stdin) once and print it.
-    let src = match opts.urls.first() {
-        Some(p) => {
-            let url = Url::from_input(p);
-            DefaultLoader::default()
-                .load(&url)
-                .map_err(|e| format!("cannot read {}: {}", p, e))?
-        }
-        None => {
-            let mut s = String::new();
-            io::stdin()
-                .read_to_string(&mut s)
-                .map_err(|e| e.to_string())?;
-            s
-        }
-    };
+    // One-shot: load the first page, lay it out once and print it.
+    let p = opts
+        .urls
+        .first()
+        .ok_or("one-shot output needs a FILE or URL")?;
+    let url = Url::from_input(p);
     let width = width.or_else(|| terminal_width()).unwrap_or(80);
-    let rows = render_source(&src, width)?;
+    let rows = render_url(
+        &url,
+        width,
+        Rc::new(DefaultLoader::default()),
+        Rc::new(Host::detect()),
+    )?;
     print!("{}", print::render(&rows, plain));
     Ok(())
 }

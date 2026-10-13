@@ -434,23 +434,23 @@ mod tests {
 
     #[test]
     fn parses_http_urls() {
-        let x = u("HTTP://Example.COM:8080/a/b.cre?x=1#top");
+        let x = u("HTTP://Example.COM:8080/a/b.rs?x=1#top");
         assert_eq!(x.scheme(), "http");
         assert_eq!(x.authority(), "example.com:8080");
-        assert_eq!(x.path(), "/a/b.cre");
+        assert_eq!(x.path(), "/a/b.rs");
         assert_eq!(x.query(), Some("x=1"));
         assert_eq!(x.fragment(), Some("top"));
-        assert_eq!(x.to_string(), "http://example.com:8080/a/b.cre?x=1#top");
+        assert_eq!(x.to_string(), "http://example.com:8080/a/b.rs?x=1#top");
         assert_eq!(u("http://example.com").path(), "/");
     }
 
     #[test]
     fn parses_file_and_about() {
-        let f = u("file:///home/me/a.cre");
+        let f = u("file:///home/me/a.rs");
         assert!(f.is_file());
         assert_eq!(f.authority(), "");
-        assert_eq!(f.to_file_path(), Some(PathBuf::from("/home/me/a.cre")));
-        assert_eq!(f.to_string(), "file:///home/me/a.cre");
+        assert_eq!(f.to_file_path(), Some(PathBuf::from("/home/me/a.rs")));
+        assert_eq!(f.to_string(), "file:///home/me/a.rs");
         let a = u("about:newtab");
         assert_eq!(a.scheme(), "about");
         assert_eq!(a.to_string(), "about:newtab");
@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn rejects_non_urls() {
-        assert!(Url::parse("examples/demo.cre").is_err());
+        assert!(Url::parse("examples/demo.rs").is_err());
         assert!(Url::parse("/abs/path").is_err());
         assert!(Url::parse("http://").is_err());
         assert!(Url::parse("x:y").is_err()); // one-letter schemes are drive letters
@@ -467,25 +467,25 @@ mod tests {
     #[test]
     fn from_input_falls_back_to_paths() {
         assert_eq!(Url::from_input("http://a.b/c").authority(), "a.b");
-        let f = Url::from_input("/tmp/../tmp/x.cre");
-        assert_eq!(f.to_string(), "file:///tmp/x.cre");
-        assert!(Url::from_input("rel/x.cre").path().ends_with("/rel/x.cre"));
+        let f = Url::from_input("/tmp/../tmp/x.rs");
+        assert_eq!(f.to_string(), "file:///tmp/x.rs");
+        assert!(Url::from_input("rel/x.rs").path().ends_with("/rel/x.rs"));
     }
 
     #[test]
     fn resolves_relative_links() {
-        let base = u("http://a.b/dir/page.cre?q=1");
+        let base = u("http://a.b/dir/page.rs?q=1");
         assert_eq!(
-            base.resolve("other.cre").unwrap().to_string(),
-            "http://a.b/dir/other.cre"
+            base.resolve("other.rs").unwrap().to_string(),
+            "http://a.b/dir/other.rs"
         );
         assert_eq!(
-            base.resolve("../x.cre").unwrap().to_string(),
-            "http://a.b/x.cre"
+            base.resolve("../x.rs").unwrap().to_string(),
+            "http://a.b/x.rs"
         );
         assert_eq!(
-            base.resolve("/root.cre").unwrap().to_string(),
-            "http://a.b/root.cre"
+            base.resolve("/root.rs").unwrap().to_string(),
+            "http://a.b/root.rs"
         );
         assert_eq!(
             base.resolve("sub/").unwrap().to_string(),
@@ -493,35 +493,35 @@ mod tests {
         );
         assert_eq!(
             base.resolve("#frag").unwrap().to_string(),
-            "http://a.b/dir/page.cre?q=1#frag"
+            "http://a.b/dir/page.rs?q=1#frag"
         );
         assert_eq!(base.resolve("//c.d/z").unwrap().to_string(), "http://c.d/z");
         assert_eq!(
             base.resolve("https://e.f/g").unwrap().to_string(),
             "https://e.f/g"
         );
-        assert_eq!(base.resolve("../../../up.cre").unwrap().path(), "/up.cre");
+        assert_eq!(base.resolve("../../../up.rs").unwrap().path(), "/up.rs");
         assert!(base.resolve("  ").is_err());
     }
 
     #[test]
     fn resolves_against_files_and_about() {
-        let f = u("file:///home/me/site/index.cre");
+        let f = u("file:///home/me/site/index.rs");
         assert_eq!(
-            f.resolve("a/b.cre").unwrap().to_string(),
-            "file:///home/me/site/a/b.cre"
+            f.resolve("a/b.rs").unwrap().to_string(),
+            "file:///home/me/site/a/b.rs"
         );
         assert_eq!(
-            f.resolve("../c.cre").unwrap().to_string(),
-            "file:///home/me/c.cre"
+            f.resolve("../c.rs").unwrap().to_string(),
+            "file:///home/me/c.rs"
         );
         let a = u("about:newtab");
-        assert!(a.resolve("x.cre").unwrap().is_file());
+        assert!(a.resolve("x.rs").unwrap().is_file());
     }
 
     #[test]
     fn short_names() {
-        assert_eq!(u("file:///a/b/c.cre").short_name(), "c.cre");
+        assert_eq!(u("file:///a/b/c.rs").short_name(), "c.rs");
         assert_eq!(u("http://host.org/").short_name(), "host.org");
         assert_eq!(u("http://host.org/dir/").short_name(), "dir");
         assert_eq!(u("about:newtab").short_name(), "newtab");
@@ -531,14 +531,14 @@ mod tests {
     fn loads_files() {
         let dir = std::env::temp_dir().join(format!("brewster-loc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("a.cre");
+        let p = dir.join("a.rs");
         std::fs::write(&p, "p \"x\"").unwrap();
         let l = DefaultLoader::default();
         assert_eq!(
             l.load(&Url::from_path(p.to_str().unwrap())).unwrap(),
             "p \"x\""
         );
-        let missing = l.load(&Url::from_path(dir.join("nope.cre").to_str().unwrap()));
+        let missing = l.load(&Url::from_path(dir.join("nope.rs").to_str().unwrap()));
         assert!(missing.unwrap_err().starts_with("cannot read"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -580,21 +580,21 @@ mod tests {
         let (port, h) = serve(vec![
             b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\np \"hi\"".to_vec(),
         ]);
-        let url = u(&format!("http://127.0.0.1:{}/a/b.cre?x=1", port));
+        let url = u(&format!("http://127.0.0.1:{}/a/b.rs?x=1", port));
         assert_eq!(DefaultLoader::default().load(&url).unwrap(), "p \"hi\"");
         assert_eq!(
             h.join().unwrap(),
-            vec!["GET /a/b.cre?x=1 HTTP/1.0".to_string()]
+            vec!["GET /a/b.rs?x=1 HTTP/1.0".to_string()]
         );
     }
 
     #[test]
     fn http_get_follows_redirects_and_decodes_chunks() {
         let (port, h) = serve(vec![
-            b"HTTP/1.1 302 Found\r\nLocation: /real.cre\r\n\r\n".to_vec(),
+            b"HTTP/1.1 302 Found\r\nLocation: /real.rs\r\n\r\n".to_vec(),
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\np \"\r\n3;ext=1\r\nab\"\r\n0\r\n\r\n".to_vec(),
         ]);
-        let url = u(&format!("http://127.0.0.1:{}/old.cre", port));
+        let url = u(&format!("http://127.0.0.1:{}/old.rs", port));
         assert_eq!(DefaultLoader::default().load(&url).unwrap(), "p \"ab\"");
         assert_eq!(h.join().unwrap().len(), 2);
     }

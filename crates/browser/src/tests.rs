@@ -2,14 +2,27 @@ use super::*;
 
 use std::{collections::HashMap, path::PathBuf};
 
-use engine::Registry;
+use engine::{MapRunner, Registry};
 use profile::Profile;
 use settings::Value;
 
-struct Mock(HashMap<String, String>);
+use cre::*;
+
+/// Serves a module for every page name; the runner of [`host`] knows what each one builds.
+struct Mock(HashMap<String, Vec<u8>>);
+
+impl Mock {
+    fn page(&mut self, url: &str, name: &str) {
+        self.0.insert(url.to_string(), MapRunner::module(name));
+    }
+}
 
 impl Loader for Mock {
     fn load(&self, url: &Url) -> Result<String, String> {
+        self.load_bytes(url).map(|b| String::from_utf8_lossy(&b).into_owned())
+    }
+
+    fn load_bytes(&self, url: &Url) -> Result<Vec<u8>, String> {
         self.0
             .get(&url.to_string())
             .cloned()
@@ -17,19 +30,85 @@ impl Loader for Mock {
     }
 }
 
-const A: &str = "h1 \"Page A\"\nlink \"/b.cre\" \"to b\"\nlink https://far.away/x \"far\"\ninput \"name\" \"\"\nbutton.onclick:hit \"press\"\nfn hit(self: Element) { self.set_text(\"pressed\") }\n";
-const B: &str = "h1 \"Page B\"\np \"hello from b\"\n";
+fn page_a() -> Element {
+    bx!([
+        h1!("Page A"),
+        link!("/b.rs", "to b"),
+        link!("https://far.away/x", "far"),
+        input!(Text, "name", ""),
+        button!({ onclick: |this: &Element, _: &Root| this.set_text("pressed") }, "press"),
+    ])
+}
+
+fn page_b() -> Element {
+    bx!([h1!("Page B"), p!("hello from b")])
+}
+
+fn page_c() -> Element {
+    h1!("Page C")
+}
+
+fn page_long() -> Element {
+    let e = bx!();
+    for i in 0..60 {
+        e.push(p!(format!("line {}", i)));
+    }
+    e
+}
+
+fn page_fill() -> Element {
+    bx!({ size: "max", bcolor: "blue" }, [p!("x")])
+}
+
+fn page_h() -> Element {
+    bx!([h1!("Hi"), p!("x")])
+}
+
+fn page_plain() -> Element {
+    p!("page")
+}
+
+fn page_other() -> Element {
+    p!("other")
+}
+
+fn page_plugin() -> Element {
+    bx!([p!("from plugin")])
+}
+
+#[path = "../../../examples/demo.rs"]
+mod demo;
+
+/// The compiler (never used: pages here are modules already) and a runner that knows the
+/// test pages above and the shipped demo.
+fn host() -> Rc<Host> {
+    let runner = MapRunner::new()
+        .page("a", page_a)
+        .page("b", page_b)
+        .page("c", page_c)
+        .page("long", page_long)
+        .page("fill", page_fill)
+        .page("h", page_h)
+        .page("plain", page_plain)
+        .page("other", page_other)
+        .page("plugin", page_plugin)
+        .page("demo", demo::page);
+    Rc::new(Host::new(
+        plugin::Compiler::new("no-such-rustc", None, std::env::temp_dir().join("brewster-test")),
+        Box::new(runner),
+    ))
+}
 
 fn files() -> Mock {
-    let mut m = HashMap::new();
-    m.insert("file:///a.cre".to_string(), A.to_string());
-    m.insert("file:///b.cre".to_string(), B.to_string());
-    m.insert("file:///c.cre".to_string(), "h1 \"Page C\"\n".to_string());
-    Mock(m)
+    let mut m = Mock(HashMap::new());
+    m.page("file:///a.rs", "a");
+    m.page("file:///b.rs", "b");
+    m.page("file:///c.rs", "c");
+    m
 }
 
 fn browser_with(profile: Profile, urls: &[&str]) -> Browser {
-    let mut b = Browser::new(profile, Registry::in_memory(), Rc::new(files()), 60, 20);
+    let mut b = Browser::with_host(profile, Registry::in_memory(), Rc::new(files()), host(), 60, 20);
     let urls: Vec<String> = urls.iter().map(|s| s.to_string()).collect();
     b.start(&urls);
     b.take_effects();
@@ -102,7 +181,7 @@ fn starts_on_the_home_page() {
 
 #[test]
 fn opens_the_given_addresses_as_tabs() {
-    let b = mk(&["/a.cre", "/b.cre"]);
+    let b = mk(&["/a.rs", "/b.rs"]);
     assert_eq!(b.tab_count(), 2);
     assert_eq!(b.active_tab(), 0);
     assert_eq!(b.tab_title(0), Some("Page A"));
@@ -111,7 +190,7 @@ fn opens_the_given_addresses_as_tabs() {
 
 #[test]
 fn the_tab_bar_is_on_top_by_default_and_the_status_line_is_last() {
-    let b = mk(&["/a.cre", "/b.cre"]);
+    let b = mk(&["/a.rs", "/b.rs"]);
     let t = text(&b);
     assert!(
         t[0].contains("Page A") && t[0].contains("Page B") && t[0].contains('×'),
@@ -119,7 +198,7 @@ fn the_tab_bar_is_on_top_by_default_and_the_status_line_is_last() {
         t[0]
     );
     assert!(t[1].starts_with("PAGE A"), "{:?}", t[1]);
-    assert!(t[19].contains("file:///a.cre"), "{:?}", t[19]);
+    assert!(t[19].contains("file:///a.rs"), "{:?}", t[19]);
     let s = b.screen();
     assert!(
         s.get(1, 0).unwrap().reverse,
@@ -132,13 +211,13 @@ fn the_tab_bar_is_on_top_by_default_and_the_status_line_is_last() {
 fn tabs_show_multiple_hides_a_lone_tab_bar() {
     let mut p = Profile::new("t").unwrap();
     p.settings.set("tabs.show", Value::str("multiple")).unwrap();
-    let mut b = browser_with(p, &["/a.cre"]);
+    let mut b = browser_with(p, &["/a.rs"]);
     assert!(text(&b)[0].starts_with("PAGE A"));
     b.on_key(ctrl('t'));
     assert!(text(&b)[0].contains("×"));
     let mut p = Profile::new("t").unwrap();
     p.settings.set("tabs.show", Value::str("never")).unwrap();
-    let b = browser_with(p, &["/a.cre", "/b.cre"]);
+    let b = browser_with(p, &["/a.rs", "/b.rs"]);
     assert!(text(&b)[0].starts_with("PAGE A"));
 }
 
@@ -156,11 +235,11 @@ fn tab_bar_position_bottom() {
         "{:?}",
         t[18]
     );
-    assert!(t[19].contains("file:///a.cre"));
+    assert!(t[19].contains("file:///a.rs"));
 }
 
 fn mk_with_profile(p: Profile) -> Browser {
-    browser_with(p, &["/a.cre", "/b.cre"])
+    browser_with(p, &["/a.rs", "/b.rs"])
 }
 
 #[test]
@@ -206,7 +285,7 @@ fn tab_bar_position_left_and_right() {
 
 #[test]
 fn keys_open_close_and_switch_tabs() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('t'));
     assert_eq!(b.tab_count(), 2);
     assert_eq!(b.active_tab(), 1);
@@ -228,7 +307,7 @@ fn keys_open_close_and_switch_tabs() {
 
 #[test]
 fn closing_a_tab_before_the_active_one_keeps_the_active_page() {
-    let mut b = mk(&["/a.cre", "/b.cre", "/c.cre"]);
+    let mut b = mk(&["/a.rs", "/b.rs", "/c.rs"]);
     b.on_key(with(Key::Right, false, true, false));
     b.on_key(with(Key::Right, false, true, false));
     assert_eq!(b.tab_title(b.active_tab()), Some("Page C"));
@@ -239,7 +318,7 @@ fn closing_a_tab_before_the_active_one_keeps_the_active_page() {
 
 #[test]
 fn clicking_the_tab_bar() {
-    let mut b = mk(&["/a.cre", "/b.cre"]);
+    let mut b = mk(&["/a.rs", "/b.rs"]);
     let t0 = text(&b)[0].clone();
     let b_col = t0.find("Page B").unwrap();
     b.on_mouse(left(b_col, 0));
@@ -259,7 +338,7 @@ fn clicking_the_tab_bar() {
 
 #[test]
 fn many_tabs_scroll_the_bar_to_the_active_one() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     for _ in 0..12 {
         b.on_key(ctrl('t'));
     }
@@ -279,10 +358,10 @@ fn many_tabs_scroll_the_bar_to_the_active_one() {
 
 #[test]
 fn enter_follows_a_link_in_the_same_tab() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(key(Key::Enter));
     assert_eq!(b.tab_count(), 1);
-    assert_eq!(b.tab_url(0).as_deref(), Some("file:///b.cre"));
+    assert_eq!(b.tab_url(0).as_deref(), Some("file:///b.rs"));
     assert!(contains(&b, "hello from b"));
     assert_eq!(b.tab_title(0), Some("Page B"));
 }
@@ -290,18 +369,18 @@ fn enter_follows_a_link_in_the_same_tab() {
 #[test]
 fn ctrl_enter_and_t_open_a_new_tab() {
     for k in [with(Key::Enter, true, false, false), ch('t')] {
-        let mut b = mk(&["/a.cre"]);
+        let mut b = mk(&["/a.rs"]);
         b.on_key(k);
         assert_eq!(b.tab_count(), 2);
         assert_eq!(b.active_tab(), 1);
-        assert_eq!(b.tab_url(0).as_deref(), Some("file:///a.cre"));
-        assert_eq!(b.tab_url(1).as_deref(), Some("file:///b.cre"));
+        assert_eq!(b.tab_url(0).as_deref(), Some("file:///a.rs"));
+        assert_eq!(b.tab_url(1).as_deref(), Some("file:///b.rs"));
     }
 }
 
 #[test]
 fn shift_enter_and_w_open_a_window_when_there_are_windows() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.set_capabilities(Capabilities {
         windows: true,
         scaling: false,
@@ -309,19 +388,19 @@ fn shift_enter_and_w_open_a_window_when_there_are_windows() {
     b.on_key(with(Key::Enter, false, false, true));
     assert_eq!(
         b.take_effects(),
-        vec![Effect::NewWindow("file:///b.cre".to_string())]
+        vec![Effect::NewWindow("file:///b.rs".to_string())]
     );
     assert_eq!(b.tab_count(), 1);
     b.on_key(ch('w'));
     assert_eq!(
         b.take_effects(),
-        vec![Effect::NewWindow("file:///b.cre".to_string())]
+        vec![Effect::NewWindow("file:///b.rs".to_string())]
     );
 }
 
 #[test]
 fn without_windows_a_new_window_is_a_tab_and_says_so() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ch('w'));
     assert_eq!(b.tab_count(), 2);
     assert!(b.take_effects().is_empty());
@@ -330,7 +409,7 @@ fn without_windows_a_new_window_is_a_tab_and_says_so() {
 
 #[test]
 fn links_are_resolved_against_the_page() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ch('j')); // the far link
     b.on_key(key(Key::Enter));
     // The mock has no such page, so an error page is shown, and the tab stays a tab.
@@ -347,12 +426,12 @@ fn links_are_resolved_against_the_page() {
 fn clicking_links_with_the_mouse() {
     let find = |b: &Browser| row_with(b, "to b").unwrap();
     // plain click: same tab
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     let y = find(&b);
     b.on_mouse(left(1, y));
-    assert_eq!(b.tab_url(0).as_deref(), Some("file:///b.cre"));
+    assert_eq!(b.tab_url(0).as_deref(), Some("file:///b.rs"));
     // ctrl-click: new tab
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     let y = find(&b);
     b.on_mouse(click(
         1,
@@ -365,14 +444,14 @@ fn clicking_links_with_the_mouse() {
         },
     ));
     assert_eq!(b.tab_count(), 2);
-    assert_eq!(b.tab_url(1).as_deref(), Some("file:///b.cre"));
+    assert_eq!(b.tab_url(1).as_deref(), Some("file:///b.rs"));
     // middle-click: new tab
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     let y = find(&b);
     b.on_mouse(click(1, y, Button::Middle, Mods::default()));
     assert_eq!(b.tab_count(), 2);
     // shift-click: new window
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.set_capabilities(Capabilities {
         windows: true,
         scaling: false,
@@ -390,10 +469,10 @@ fn clicking_links_with_the_mouse() {
     ));
     assert_eq!(
         b.take_effects(),
-        vec![Effect::NewWindow("file:///b.cre".to_string())]
+        vec![Effect::NewWindow("file:///b.rs".to_string())]
     );
     // an unbound chord only selects
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     let y = find(&b);
     b.on_mouse(click(
         1,
@@ -406,12 +485,12 @@ fn clicking_links_with_the_mouse() {
         },
     ));
     assert_eq!(b.tab_count(), 1);
-    assert_eq!(b.tab_url(0).as_deref(), Some("file:///a.cre"));
+    assert_eq!(b.tab_url(0).as_deref(), Some("file:///a.rs"));
 }
 
 #[test]
 fn clicking_an_input_edits_it_and_a_button_runs_its_function() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     let y = row_with(&b, "name:").unwrap();
     b.on_mouse(left(1, y));
     assert!(b.viewer().editing().is_some());
@@ -429,20 +508,17 @@ fn clicking_an_input_edits_it_and_a_button_runs_its_function() {
 
 #[test]
 fn mouse_wheel_scrolls_the_page() {
-    let mut src = String::new();
-    for i in 0..60 {
-        src.push_str(&format!("p \"line {}\"\n", i));
-    }
     let mut m = files();
-    m.0.insert("file:///long.cre".to_string(), src);
-    let mut b = Browser::new(
+    m.page("file:///long.rs", "long");
+    let mut b = Browser::with_host(
         Profile::new("t").unwrap(),
         Registry::in_memory(),
         Rc::new(m),
+        host(),
         40,
         12,
     );
-    b.start(&["/long.cre".to_string()]);
+    b.start(&["/long.rs".to_string()]);
     b.on_mouse(MouseEvent {
         col: 5,
         row: 5,
@@ -463,20 +539,20 @@ fn mouse_wheel_scrolls_the_page() {
 
 #[test]
 fn quit_keys_and_hard_ctrl_c() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ch('q'));
     assert!(b.should_quit());
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('q'));
     assert!(b.should_quit());
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('c'));
     assert!(b.should_quit());
 }
 
 #[test]
 fn typing_in_an_input_does_not_run_bindings_but_ctrl_chords_still_work() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ch('j'));
     b.on_key(ch('j'));
     b.on_key(key(Key::Enter)); // edit the input
@@ -500,17 +576,17 @@ fn rebinding_keys_through_settings() {
     p.settings
         .set("keybinds.link_open", Value::List(vec![Value::str("space")]))
         .unwrap();
-    let mut b = browser_with(p, &["/a.cre"]);
+    let mut b = browser_with(p, &["/a.rs"]);
     b.on_key(ch('q'));
     assert!(!b.should_quit(), "q is no longer bound");
     b.on_key(key(Key::Enter));
     assert_eq!(
         b.tab_url(0).as_deref(),
-        Some("file:///a.cre"),
+        Some("file:///a.rs"),
         "enter no longer follows links"
     );
     b.on_key(ch(' '));
-    assert_eq!(b.tab_url(0).as_deref(), Some("file:///b.cre"));
+    assert_eq!(b.tab_url(0).as_deref(), Some("file:///b.rs"));
     b.on_key(ch('x'));
     assert!(b.should_quit());
 }
@@ -524,7 +600,7 @@ fn bad_bindings_are_reported_and_skipped() {
             Value::List(vec![Value::str("ctrl-ctrl-q"), Value::str("z")]),
         )
         .unwrap();
-    let mut b = browser_with(p, &["/a.cre"]);
+    let mut b = browser_with(p, &["/a.rs"]);
     assert!(b.status().contains("keybinds.quit"), "{}", b.status());
     b.on_key(ch('z'));
     assert!(b.should_quit());
@@ -597,7 +673,7 @@ fn uppercase_letters_match_whatever_the_shift_report() {
     p.settings
         .set("keybinds.reload", Value::List(vec![Value::str("R")]))
         .unwrap();
-    let mut b = browser_with(p, &["/a.cre"]);
+    let mut b = browser_with(p, &["/a.rs"]);
     b.on_key(with(Key::Char('R'), false, false, true));
     assert!(b.status().contains("reloaded"));
     b.on_key(with(Key::Char('R'), false, false, false));
@@ -606,7 +682,7 @@ fn uppercase_letters_match_whatever_the_shift_report() {
 
 #[test]
 fn reload_drops_edits_and_picks_up_the_new_source() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ch('j'));
     b.on_key(ch('j'));
     b.on_key(key(Key::Enter));
@@ -620,34 +696,34 @@ fn reload_drops_edits_and_picks_up_the_new_source() {
 
 #[test]
 fn open_prompt_navigates_the_current_tab() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('l'));
     assert!(b.overlay_open());
     assert!(contains(&b, "address:"));
     // The current address is prefilled; clear it and type another.
     b.on_key(ctrl('u'));
-    type_text(&mut b, "/c.cre");
+    type_text(&mut b, "/c.rs");
     b.on_key(key(Key::Enter));
     assert!(!b.overlay_open());
-    assert_eq!(b.tab_url(0).as_deref(), Some("file:///c.cre"));
+    assert_eq!(b.tab_url(0).as_deref(), Some("file:///c.rs"));
     assert_eq!(b.tab_title(0), Some("Page C"));
     // Esc cancels
     b.on_key(ctrl('l'));
     b.on_key(key(Key::Esc));
-    assert_eq!(b.tab_url(0).as_deref(), Some("file:///c.cre"));
+    assert_eq!(b.tab_url(0).as_deref(), Some("file:///c.rs"));
     // paste goes into the prompt
     b.on_key(ctrl('l'));
     b.on_key(ctrl('u'));
-    b.on_paste("/b.cre".to_string());
+    b.on_paste("/b.rs".to_string());
     b.on_key(key(Key::Enter));
-    assert_eq!(b.tab_url(0).as_deref(), Some("file:///b.cre"));
+    assert_eq!(b.tab_url(0).as_deref(), Some("file:///b.rs"));
 }
 
 // ── settings box ────────────────────────────────────────────────────
 
 #[test]
 fn ctrl_p_opens_the_settings_box_in_the_middle_with_search_on_top() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('p'));
     assert!(b.settings_open());
     let t = text(&b);
@@ -675,7 +751,7 @@ fn ctrl_p_opens_the_settings_box_in_the_middle_with_search_on_top() {
 
 #[test]
 fn searching_filters_the_list() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('p'));
     type_text(&mut b, "sidebar");
     let t = text(&b);
@@ -693,7 +769,7 @@ fn searching_filters_the_list() {
 
 #[test]
 fn enter_cycles_a_choice_and_the_change_applies_at_once() {
-    let mut b = mk(&["/a.cre", "/b.cre"]);
+    let mut b = mk(&["/a.rs", "/b.rs"]);
     b.on_key(ctrl('p'));
     type_text(&mut b, "tabs.position");
     b.on_key(key(Key::Enter)); // top -> bottom
@@ -719,7 +795,7 @@ fn enter_cycles_a_choice_and_the_change_applies_at_once() {
 
 #[test]
 fn enter_toggles_a_boolean_and_cursor_mode_applies_to_open_tabs() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     assert_eq!(b.viewer().cursor.mode(), Mode::Focused);
     b.on_key(ctrl('p'));
     type_text(&mut b, "cursor_mode");
@@ -734,7 +810,7 @@ fn enter_toggles_a_boolean_and_cursor_mode_applies_to_open_tabs() {
 
 #[test]
 fn numbers_and_lists_are_edited_as_text_and_checked() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('p'));
     type_text(&mut b, "sidebar_width");
     b.on_key(key(Key::Enter));
@@ -776,7 +852,7 @@ fn numbers_and_lists_are_edited_as_text_and_checked() {
 
 #[test]
 fn esc_cancels_an_edit_and_ctrl_r_resets() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('p'));
     type_text(&mut b, "title_width");
     b.on_key(key(Key::Enter));
@@ -797,7 +873,7 @@ fn esc_cancels_an_edit_and_ctrl_r_resets() {
 
 #[test]
 fn arrows_move_the_selection_and_the_list_scrolls() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('p'));
     for _ in 0..30 {
         b.on_key(key(Key::Down));
@@ -816,7 +892,7 @@ fn arrows_move_the_selection_and_the_list_scrolls() {
 
 #[test]
 fn clicking_a_setting_changes_it() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('p'));
     type_text(&mut b, "tabs.show");
     let y = row_with(&b, "tabs.show").unwrap();
@@ -861,7 +937,7 @@ fn profile_at(dir: &PathBuf, name: &str) -> Profile {
 fn ctrl_s_in_the_box_saves_settings_tabs_and_applications() {
     let dir = tmp("save");
     let path = dir.join("p.toml");
-    let mut b = browser_with(profile_at(&dir, "p.toml"), &["/a.cre", "/b.cre"]);
+    let mut b = browser_with(profile_at(&dir, "p.toml"), &["/a.rs", "/b.rs"]);
     b.on_key(ctrl('p'));
     type_text(&mut b, "tabs.position");
     b.on_key(key(Key::Enter));
@@ -873,7 +949,7 @@ fn ctrl_s_in_the_box_saves_settings_tabs_and_applications() {
     assert_eq!(p.settings.str("tabs.position"), "bottom");
     assert_eq!(
         p.tabs.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(),
-        vec!["file:///a.cre", "file:///b.cre"]
+        vec!["file:///a.rs", "file:///b.rs"]
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -882,7 +958,7 @@ fn ctrl_s_in_the_box_saves_settings_tabs_and_applications() {
 fn session_only_settings_are_not_written_at_quit_but_tabs_are() {
     let dir = tmp("autosave");
     let path = dir.join("p.json");
-    let mut b = browser_with(profile_at(&dir, "p.json"), &["/a.cre"]);
+    let mut b = browser_with(profile_at(&dir, "p.json"), &["/a.rs"]);
     b.on_key(ctrl('p'));
     type_text(&mut b, "tabs.position");
     b.on_key(key(Key::Enter));
@@ -905,14 +981,15 @@ fn session_only_settings_are_not_written_at_quit_but_tabs_are() {
 fn saved_tabs_come_back_unless_addresses_are_given() {
     let dir = tmp("restore");
     {
-        let mut b = browser_with(profile_at(&dir, "p.yaml"), &["/a.cre", "/b.cre"]);
+        let mut b = browser_with(profile_at(&dir, "p.yaml"), &["/a.rs", "/b.rs"]);
         b.on_key(with(Key::Right, false, true, false));
         b.on_key(ch('q'));
     }
-    let mut b = Browser::new(
+    let mut b = Browser::with_host(
         profile_at(&dir, "p.yaml"),
         Registry::in_memory(),
         Rc::new(files()),
+        host(),
         60,
         20,
     );
@@ -920,14 +997,15 @@ fn saved_tabs_come_back_unless_addresses_are_given() {
     assert_eq!(b.tab_count(), 2);
     assert_eq!(b.active_tab(), 1);
     assert_eq!(b.tab_title(0), Some("Page A"));
-    let mut b = Browser::new(
+    let mut b = Browser::with_host(
         profile_at(&dir, "p.yaml"),
         Registry::in_memory(),
         Rc::new(files()),
+        host(),
         60,
         20,
     );
-    b.start(&["/c.cre".to_string()]);
+    b.start(&["/c.rs".to_string()]);
     assert_eq!(b.tab_count(), 1);
     assert_eq!(b.tab_title(0), Some("Page C"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -935,7 +1013,7 @@ fn saved_tabs_come_back_unless_addresses_are_given() {
 
 #[test]
 fn a_profile_without_a_file_cannot_save() {
-    let mut b = mk(&["/a.cre"]);
+    let mut b = mk(&["/a.rs"]);
     b.on_key(ctrl('s'));
     assert!(b.status().contains("no file"), "{}", b.status());
     b.on_key(ch('q'));
@@ -946,24 +1024,21 @@ fn a_profile_without_a_file_cannot_save() {
 
 #[test]
 fn installed_plugins_run_on_matching_pages() {
-    let reg = Registry::in_memory();
-    let mut b = Browser::new(Profile::new("t").unwrap(), reg, Rc::new(files()), 60, 20);
-    // A page installs a plugin for its own application; it runs on the next load.
     let mut m = files();
-    m.0.insert(
-        "https://x.y/app/setup".to_string(),
-        "root.plugin.install(\"app\", Plugin::source(\"p \\\"from plugin\\\"\"))\np \"setup\""
-            .to_string(),
-    );
-    m.0.insert("https://x.y/app/page".to_string(), "p \"page\"".to_string());
-    m.0.insert("https://x.y/other".to_string(), "p \"other\"".to_string());
-    b.loader = Rc::new(m);
-    b.start(&["https://x.y/app/setup".to_string()]);
-    assert!(contains(&b, "setup") && !contains(&b, "from plugin"));
-    b.on_key(ctrl('l'));
-    b.on_key(ctrl('u'));
-    type_text(&mut b, "https://x.y/app/page");
-    b.on_key(key(Key::Enter));
+    m.page("https://x.y/app/page", "plain");
+    m.page("https://x.y/other", "other");
+    m.page("https://x.y/app/plugin.wasm", "plugin");
+    let loader = Rc::new(m);
+    let mut reg = Registry::in_memory();
+    reg.install(
+        plugin::AppKey::new("x.y", "app").unwrap(),
+        plugin::Plugin::Url("plugin.wasm".into()),
+        &Url::parse("https://x.y/app/page").unwrap(),
+        &*loader,
+    )
+    .unwrap();
+    let mut b = Browser::with_host(Profile::new("t").unwrap(), reg, loader, host(), 60, 20);
+    b.start(&["https://x.y/app/page".to_string()]);
     assert!(
         contains(&b, "page") && contains(&b, "from plugin"),
         "{:?}",
@@ -980,9 +1055,54 @@ fn installed_plugins_run_on_matching_pages() {
 }
 
 #[test]
-fn a_broken_page_shows_an_error_page_with_the_message() {
+fn a_page_that_cannot_run_shows_an_error_page_with_the_message() {
     let mut m = files();
-    m.0.insert("file:///bad.cre".to_string(), "blink \"x\"".to_string());
+    m.page("file:///bad.rs", "not-a-page");
+    let mut b = Browser::with_host(
+        Profile::new("t").unwrap(),
+        Registry::in_memory(),
+        Rc::new(m),
+        host(),
+        60,
+        20,
+    );
+    b.start(&["/bad.rs".to_string()]);
+    assert!(contains(&b, "CANNOT OPEN THIS PAGE"));
+    assert!(contains(&b, "unknown module"), "{:?}", text(&b));
+}
+
+#[test]
+fn a_page_that_is_not_there_shows_an_error_page() {
+    let mut b = mk(&["/missing.rs"]);
+    assert!(contains(&b, "CANNOT OPEN THIS PAGE"));
+    assert!(contains(&b, "not found"), "{:?}", text(&b));
+    // The error page has a way out.
+    b.on_key(key(Key::Enter));
+    assert!(contains(&b, "brewster"), "{:?}", text(&b));
+}
+
+#[test]
+fn source_that_cannot_be_compiled_here_asks_for_the_precompiled_module() {
+    // The source is not a module and there is no rustc, so the `.wasm` beside it is used.
+    let mut m = files();
+    m.0.insert("file:///d.rs".to_string(), b"fn page() {}".to_vec());
+    m.page("file:///d.wasm", "b");
+    let mut b = Browser::with_host(
+        Profile::new("t").unwrap(),
+        Registry::in_memory(),
+        Rc::new(m),
+        host(),
+        60,
+        20,
+    );
+    b.start(&["/d.rs".to_string()]);
+    assert!(contains(&b, "hello from b"), "{:?}", text(&b));
+}
+
+#[test]
+fn a_build_without_a_wasm_engine_says_so() {
+    let mut m = files();
+    m.page("file:///a.rs", "a");
     let mut b = Browser::new(
         Profile::new("t").unwrap(),
         Registry::in_memory(),
@@ -990,29 +1110,12 @@ fn a_broken_page_shows_an_error_page_with_the_message() {
         60,
         20,
     );
-    b.start(&["/bad.cre".to_string()]);
-    assert!(contains(&b, "CANNOT OPEN THIS PAGE"));
-    assert!(contains(&b, "unknown variable `blink`"));
+    b.start(&["/a.rs".to_string()]);
+    assert!(contains(&b, "no wasm engine"), "{:?}", text(&b));
 }
 
 #[test]
-fn error_messages_with_special_characters_are_shown_literally() {
-    let mut m = files();
-    m.0.insert("file:///bad.cre".to_string(), "p \"{oops\"".to_string());
-    let mut b = Browser::new(
-        Profile::new("t").unwrap(),
-        Registry::in_memory(),
-        Rc::new(m),
-        60,
-        20,
-    );
-    b.start(&["/bad.cre".to_string()]);
-    assert!(contains(&b, "CANNOT OPEN THIS PAGE"));
-    assert!(contains(&b, "missing `}`"), "{:?}", text(&b));
-}
-
-#[test]
-fn pages_helpers_quote_anything() {
+fn the_browsers_own_pages_show_any_text_literally() {
     for s in [
         "plain",
         "with \"quotes\"",
@@ -1021,10 +1124,10 @@ fn pages_helpers_quote_anything() {
         "multi\nline",
         "",
     ] {
-        let src = format!("p {}", pages::raw(s));
-        let rows = engine::render_source(&src, 40).unwrap();
-        let shown: String = rows.iter().map(engine::row_text).collect::<String>();
-        assert_eq!(shown.trim_end(), s.replace('\n', " ").trim_end(), "{:?}", s);
+        let rows = engine::render_page(|| pages::error("u", s), 60).unwrap();
+        let shown: Vec<String> = rows.iter().map(|r| engine::row_text(r).trim_end().to_string()).collect();
+        let want = s.replace('\n', " ");
+        assert!(shown.iter().any(|l| l.trim_end() == want.trim_end()), "{:?} in {:?}", s, shown);
     }
 }
 
@@ -1032,7 +1135,7 @@ fn pages_helpers_quote_anything() {
 
 #[test]
 fn resizing_relayouts_every_tab() {
-    let mut b = mk(&["/a.cre", "/b.cre"]);
+    let mut b = mk(&["/a.rs", "/b.rs"]);
     b.on_resize(30, 10);
     let s = b.screen();
     assert_eq!((s.cols, s.rows), (30, 10));
@@ -1045,18 +1148,16 @@ fn resizing_relayouts_every_tab() {
 #[test]
 fn size_max_fills_the_window() {
     let mut m = files();
-    m.0.insert(
-        "file:///fill.cre".to_string(),
-        "box.size:max.bcolor:blue { p \"x\" }".to_string(),
-    );
-    let mut b = Browser::new(
+    m.page("file:///fill.rs", "fill");
+    let mut b = Browser::with_host(
         Profile::new("t").unwrap(),
         Registry::in_memory(),
         Rc::new(m),
+        host(),
         20,
         10,
     );
-    b.start(&["/fill.cre".to_string()]);
+    b.start(&["/fill.rs".to_string()]);
     let s = b.screen();
     // tab bar (1) + page (8) + status (1): the box covers all page rows and the full width
     for y in 1..9 {
@@ -1070,18 +1171,16 @@ fn size_max_fills_the_window() {
 #[test]
 fn headers_are_scaled_only_when_the_frontend_can_draw_them() {
     let mut m = files();
-    m.0.insert(
-        "file:///h.cre".to_string(),
-        "h1 \"Hi\"\np \"x\"".to_string(),
-    );
-    let mut b = Browser::new(
+    m.page("file:///h.rs", "h");
+    let mut b = Browser::with_host(
         Profile::new("t").unwrap(),
         Registry::in_memory(),
         Rc::new(m),
+        host(),
         20,
         12,
     );
-    b.start(&["/h.cre".to_string()]);
+    b.start(&["/h.rs".to_string()]);
     let s = b.screen();
     assert!(
         (0..20).all(|x| s.get(x, 1).unwrap().scale == 1),
@@ -1102,7 +1201,7 @@ fn headers_are_scaled_only_when_the_frontend_can_draw_them() {
 
 #[test]
 fn the_cursor_is_painted_reversed_on_the_screen() {
-    let b = mk(&["/a.cre"]);
+    let b = mk(&["/a.rs"]);
     let y = row_with(&b, "to b").unwrap();
     let s = b.screen();
     assert!(s.get(0, y).unwrap().reverse);
@@ -1112,115 +1211,26 @@ fn the_cursor_is_painted_reversed_on_the_screen() {
 // ── the example pages ───────────────────────────────────────────────
 
 #[test]
-fn the_plugins_example_installs_lists_runs_and_clears() {
-    let mut m = files();
-    m.0.insert(
-        "http://example.com/demo/plugins.cre".to_string(),
-        include_str!("../../../examples/plugins.cre").to_string(),
-    );
-    let mut b = Browser::new(
-        Profile::new("t").unwrap(),
-        Registry::in_memory(),
-        Rc::new(m),
-        70,
-        24,
-    );
-    b.start(&["http://example.com/demo/plugins.cre".to_string()]);
-    b.take_effects();
-    assert!(contains(&b, "Nothing installed yet."), "{:?}", text(&b));
-    b.on_key(key(Key::Enter)); // install
-    assert!(contains(&b, "Installed "), "{:?}", text(&b));
-    b.on_key(ch('j'));
-    b.on_key(key(Key::Enter)); // list
-    assert!(contains(&b, "1 plugin(s) installed"), "{:?}", text(&b));
-    b.on_key(ch('j'));
-    b.on_key(key(Key::Enter)); // one-shot
-    assert!(contains(&b, "one-shot plugin ran"), "{:?}", text(&b));
-    // The installed plugin runs on the next load of a page under the application.
-    b.on_key(ch('r'));
-    assert!(contains(&b, "Added by a plugin"), "{:?}", text(&b));
-    // Reloading puts the cursor back on the first button: the fourth is "Remove them again".
-    for _ in 0..3 {
-        b.on_key(ch('j'));
-    }
-    b.on_key(key(Key::Enter)); // clear
-    b.on_key(ch('r'));
-    assert!(!contains(&b, "Added by a plugin"), "{:?}", text(&b));
-}
-
-#[test]
 fn the_demo_example_button_runs_its_function() {
     let mut m = files();
-    m.0.insert(
-        "file:///demo.cre".to_string(),
-        include_str!("../../../examples/demo.cre").to_string(),
-    );
-    let mut b = Browser::new(
+    m.page("file:///demo.rs", "demo");
+    let mut b = Browser::with_host(
         Profile::new("t").unwrap(),
         Registry::in_memory(),
         Rc::new(m),
+        host(),
         70,
         40,
     );
-    b.start(&["/demo.cre".to_string()]);
+    b.start(&["/demo.rs".to_string()]);
     assert!(contains(&b, "Press the button"));
-    // Focus order: two links, the inputs, then the button.
+    assert!(contains(&b, "Copyright"), "the template's `after` content is there");
+    assert!(contains(&b, "Home Page"), "and its `before` content");
+    assert!(!contains(&b, "skipped"));
+    // Focus order: two links (from the template), the inputs, then the button.
     for _ in 0..4 {
         b.on_key(ch('j'));
     }
     b.on_key(key(Key::Enter));
     assert!(contains(&b, "Hello, friend!"), "{:?}", text(&b));
-}
-
-#[test]
-fn the_compiled_example_matches_its_source_and_runs() {
-    // The hex in compiled.cre is the compiled form of banner.cre.
-    let compiled = include_str!("../../../examples/compiled.cre");
-    let source = include_str!("../../../examples/banner.cre");
-    let plugin::Plugin::Compiled(bytes) = plugin::Plugin::compile(source).unwrap() else {
-        panic!()
-    };
-    assert!(
-        compiled.contains(&plugin::hex(&bytes)),
-        "re-run `brewster-cli --compile examples/banner.cre`"
-    );
-
-    let mut m = files();
-    m.0.insert(
-        "http://example.com/demo/compiled.cre".to_string(),
-        compiled.to_string(),
-    );
-    let mut b = Browser::new(
-        Profile::new("t").unwrap(),
-        Registry::in_memory(),
-        Rc::new(m),
-        80,
-        24,
-    );
-    b.start(&["http://example.com/demo/compiled.cre".to_string()]);
-    b.on_key(key(Key::Enter)); // 1. run once
-    assert!(
-        contains(&b, "Hello from a compiled plugin"),
-        "{:?}",
-        text(&b)
-    );
-    b.on_key(ch('j'));
-    b.on_key(key(Key::Enter)); // 2. its function
-    assert!(
-        contains(&b, "compiled plugin's function ran"),
-        "{:?}",
-        text(&b)
-    );
-    b.on_key(ch('j'));
-    b.on_key(ch('j'));
-    b.on_key(key(Key::Enter)); // 4. corrupted
-    assert!(contains(&b, "Refused:"), "{:?}", text(&b));
-    b.on_key(ch('k'));
-    b.on_key(key(Key::Enter)); // 3. install
-    assert!(contains(&b, "Installed "), "{:?}", text(&b));
-    b.on_key(ch('r'));
-    assert!(
-        contains(&b, "Hello from a compiled plugin"),
-        "the installed plugin runs on reload"
-    );
 }

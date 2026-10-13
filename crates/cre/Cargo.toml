@@ -1,0 +1,18 @@
+[package]
+name = "cre"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tree = { path = "../tree" }
+
+# The demo page is built as a library: `cargo build -p cre --example demo`.
+[[example]]
+name = "demo"
+path = "../../examples/demo.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "banner"
+path = "../../examples/banner.rs"
+crate-type = ["cdylib"]

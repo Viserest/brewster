@@ -74,7 +74,7 @@ fn full() -> Profile {
         .unwrap();
     p.tabs = vec![
         SavedTab {
-            url: "file:///a.cre".into(),
+            url: "file:///a.rs".into(),
             title: "A \"quoted\" title".into(),
         },
         SavedTab {
@@ -154,7 +154,7 @@ fn bad_values_warn_and_good_ones_load() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
         &path,
-        "storage: nowhere\nsettings:\n  tabs:\n    position: sideways\n    sidebar_width: 30\ntabs:\n  - url: a.cre\n  - title: no url\nactive_tab: 9\n",
+        "storage: nowhere\nsettings:\n  tabs:\n    position: sideways\n    sidebar_width: 30\ntabs:\n  - url: a.rs\n  - title: no url\nactive_tab: 9\n",
     )
     .unwrap();
     let (p, w) = Profile::load(&path).unwrap();
@@ -209,7 +209,7 @@ fn plugins_live_in_the_profile_sandbox_and_come_back() {
     let loader = location::DefaultLoader::default();
     let key = AppKey::new("x.y", "shop").unwrap();
     let id = reg
-        .install(key, Plugin::compile("p \"hi\"").unwrap(), &base, &loader)
+        .install(key, Plugin::Source("fn page() {}".into()), &base, &loader)
         .unwrap();
     a.sync_applications(&reg);
     assert_eq!(

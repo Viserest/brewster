@@ -572,15 +572,22 @@ impl Viewer {
 mod tests {
     use super::*;
 
-    const SRC: &str = "h1 \"Title\"\n\
-        p \"plain text\"\n\
-        link https://x.y \"Home\"\n\
-        input \"name\" \"John\"\n\
-        input.protected \"pw\" \"hunter2\"\n\
-        button \"Go\"\n";
+    use cre::*;
 
-    fn app(src: &str, w: usize, h: usize) -> Viewer {
-        Viewer::from_document("test.cre", Document::parse(src).unwrap(), w, h)
+    fn src() -> Element {
+        bx!([
+            h1!("Title"),
+            p!("plain text"),
+            link!("https://x.y", "Home"),
+            input!(Text, "name", "John"),
+            input!(Password, "pw", "hunter2"),
+            button!("Go"),
+        ])
+    }
+
+    fn app(build: impl FnOnce() -> Element, w: usize, h: usize) -> Viewer {
+        let doc = Document::from_page(engine::Url::about("blank"), build);
+        Viewer::from_document("test.rs", doc, w, h)
     }
 
     fn key(k: Key) -> KeyPress {
@@ -605,14 +612,14 @@ mod tests {
 
     #[test]
     fn starts_in_focused_mode_on_the_first_link() {
-        let a = app(SRC, 40, 20);
+        let a = app(src, 40, 20);
         assert_eq!(a.cursor.mode(), Mode::Focused);
         assert_eq!(row_of(&a), 2);
     }
 
     #[test]
     fn j_and_k_move_between_focusables() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('j'));
         assert_eq!(row_of(&a), 3);
         a.on_key(key(Key::Down));
@@ -628,7 +635,7 @@ mod tests {
 
     #[test]
     fn m_switches_to_all_mode_and_back() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('m'));
         assert_eq!(a.cursor.mode(), Mode::All);
         assert_eq!(a.notice.as_deref(), Some("cursor mode: all"));
@@ -643,7 +650,7 @@ mod tests {
 
     #[test]
     fn y_copies_the_line_under_the_cursor() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('y'));
         assert_eq!(a.pending_copy.take().as_deref(), Some("Home"));
         assert_eq!(a.register, "Home");
@@ -657,7 +664,7 @@ mod tests {
 
     #[test]
     fn copying_an_input_yields_its_value_even_when_protected() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('y'));
         assert_eq!(a.pending_copy.take().as_deref(), Some("John"));
@@ -668,7 +675,7 @@ mod tests {
 
     #[test]
     fn copy_on_an_empty_page_reports_nothing_to_copy() {
-        let mut a = app("p \"x\"", 10, 5);
+        let mut a = app(|| p!("x"), 10, 5);
         assert_eq!(a.cursor.row(), None);
         a.on_key(ch('y'));
         assert_eq!(a.pending_copy, None);
@@ -677,7 +684,7 @@ mod tests {
 
     #[test]
     fn enter_edits_an_input_and_typing_changes_it() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('j'));
         a.on_key(key(Key::Enter));
         assert_eq!(a.editing(), Some(0));
@@ -696,7 +703,7 @@ mod tests {
 
     #[test]
     fn typed_letters_do_not_trigger_commands_while_editing() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('i'));
         for c in ['q', 'm', 'y', 'j'] {
@@ -709,14 +716,14 @@ mod tests {
 
     #[test]
     fn enter_on_a_link_does_not_edit() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(key(Key::Enter));
         assert_eq!(a.editing(), None);
     }
 
     #[test]
     fn i_on_a_link_says_it_is_not_an_input() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('i'));
         assert_eq!(a.editing(), None);
         assert_eq!(
@@ -727,7 +734,7 @@ mod tests {
 
     #[test]
     fn ctrl_c_copies_while_editing_and_does_nothing_otherwise() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('i'));
         a.on_key(ch('x'));
@@ -740,7 +747,7 @@ mod tests {
 
     #[test]
     fn copy_then_paste_round_trips_through_the_register() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('y')); // copies "Home"
         a.on_key(ch('j')); // onto the name input
         a.on_key(ch('p')); // paste: enters the input and inserts at the end
@@ -752,7 +759,7 @@ mod tests {
 
     #[test]
     fn terminal_paste_inserts_at_the_caret() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('i'));
         a.on_key(key(Key::Home));
@@ -765,7 +772,7 @@ mod tests {
 
     #[test]
     fn terminal_paste_on_an_input_enters_it() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('j'));
         a.on_paste("X".to_string());
         assert_eq!(a.editing(), Some(0));
@@ -774,7 +781,7 @@ mod tests {
 
     #[test]
     fn paste_is_refused_off_an_input() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_paste("X".to_string());
         assert_eq!(a.editing(), None);
         assert_eq!(
@@ -787,7 +794,7 @@ mod tests {
 
     #[test]
     fn tab_leaves_the_input_and_moves_on() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('i'));
         a.on_key(key(Key::Tab));
@@ -797,14 +804,14 @@ mod tests {
 
     #[test]
     fn quitting_is_the_browsers_business() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         assert_eq!(a.on_key(ch('q')), Flow::Continue);
         assert_eq!(a.on_key(key(Key::Esc)), Flow::Continue);
     }
 
     #[test]
     fn enter_on_a_link_opens_it_in_the_same_tab() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         assert_eq!(a.current_href().as_deref(), Some("https://x.y"));
         assert_eq!(
             a.on_key(key(Key::Enter)),
@@ -819,8 +826,16 @@ mod tests {
 
     #[test]
     fn enter_on_a_button_runs_its_onclick() {
-        let src = "fn hit(self: Element) { self.set_text(\"hit\") }\nbutton.onclick:hit \"idle\"\nbutton \"plain\"";
-        let mut a = app(src, 30, 10);
+        let mut a = app(
+            || {
+                bx!([
+                    button!({ onclick: |this: &Element, _: &Root| this.set_text("hit") }, "idle"),
+                    button!("plain"),
+                ])
+            },
+            30,
+            10,
+        );
         assert_eq!(a.on_key(key(Key::Enter)), Flow::Continue);
         assert_eq!(text_of(&a, 0), "[ hit ]");
         assert_eq!(a.cursor.row(), Some(0));
@@ -831,14 +846,32 @@ mod tests {
 
     #[test]
     fn a_failing_onclick_is_reported() {
-        let mut a = app("button.onclick:nope \"B\"", 30, 10);
+        struct Failing;
+        impl engine::Guest for Failing {
+            fn tree(&mut self) -> Result<Vec<tree::Element>, String> {
+                let mut e = tree::Element::default();
+                e.tag = "button".into();
+                e.args = vec!["B".into()];
+                e.id = 1;
+                e.style.insert("onclick".into(), vec!["1".into()]);
+                Ok(vec![e])
+            }
+            fn click(&mut self, _: usize) -> Result<bool, String> {
+                Err("wasm trap: unreachable".into())
+            }
+            fn problems(&mut self) -> Vec<String> {
+                vec![]
+            }
+        }
+        let doc = Document::from_guest(engine::Url::about("blank"), Box::new(Failing)).unwrap();
+        let mut a = Viewer::from_document("test.rs", doc, 30, 10);
         a.on_key(key(Key::Enter));
-        assert!(a.notice.as_deref().unwrap().contains("nope"));
+        assert!(a.notice.as_deref().unwrap().contains("wasm trap"));
     }
 
     #[test]
     fn select_row_moves_the_cursor_to_a_stop() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         assert!(a.select_row(5));
         assert_eq!(row_of(&a), 5);
         assert!(!a.select_row(1), "plain text is not a stop in focused mode");
@@ -856,7 +889,7 @@ mod tests {
 
     #[test]
     fn size_max_fills_the_screen_when_fill_is_on() {
-        let mut a = app("box.size:max.bcolor:blue { p \"x\" }", 10, 6);
+        let mut a = app(|| bx!({ size: "max", bcolor: "blue" }, [p!("x")]), 10, 6);
         assert_eq!(a.page.rows.len(), 5);
         a.set_options(false, false);
         assert_eq!(a.page.rows.len(), 1);
@@ -865,18 +898,25 @@ mod tests {
         assert_eq!(a.page.rows.len(), 8);
     }
 
-    fn long_page() -> String {
-        let mut s = String::from("button \"first\"\n");
+    fn long_page() -> Element {
+        long_page_with(None)
+    }
+
+    fn long_page_with(tail: Option<&str>) -> Element {
+        let e = bx!([button!("first")]);
         for i in 0..40 {
-            s.push_str(&format!("p \"line {}\"\n", i));
+            e.push(p!(format!("line {}", i)));
         }
-        s.push_str("button \"last\"\n");
-        s
+        e.push(button!("last"));
+        if let Some(t) = tail {
+            e.push(p!(t));
+        }
+        e
     }
 
     #[test]
     fn view_keys_scroll_and_pull_the_cursor_onto_a_visible_stop() {
-        let mut a = app(&long_page(), 30, 11); // 10 visible rows, 42 rows in total
+        let mut a = app(long_page, 30, 11); // 10 visible rows, 42 rows in total
         assert_eq!(row_of(&a), 0);
         a.on_key(ch(' '));
         assert_eq!(a.top, 10);
@@ -895,13 +935,13 @@ mod tests {
 
     #[test]
     fn g_and_capital_g_jump_the_cursor_to_the_first_and_last_stop() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('G'));
         assert_eq!(row_of(&a), 5);
         a.on_key(ch('g'));
         assert_eq!(row_of(&a), 2);
         // With text after the last stop, G goes to the stop and the view follows it.
-        let mut b = app(&format!("{}p \"tail\"\n", long_page()), 30, 11);
+        let mut b = app(|| long_page_with(Some("tail")), 30, 11);
         b.on_key(ch('G'));
         assert_eq!(row_of(&b), 41);
         assert!(b.top <= 41 && 41 < b.top + 10);
@@ -912,7 +952,7 @@ mod tests {
 
     #[test]
     fn g_and_capital_g_scroll_when_there_are_no_stops() {
-        let mut a = app("p \"a\"\np \"b\"\np \"c\"\np \"d\"", 10, 3);
+        let mut a = app(|| bx!([p!("a"), p!("b"), p!("c"), p!("d")]), 10, 3);
         a.on_key(ch('G'));
         assert_eq!(a.top, 2);
         a.on_key(ch('g'));
@@ -921,7 +961,7 @@ mod tests {
 
     #[test]
     fn j_and_k_without_stops_scroll_the_view() {
-        let mut a = app("p \"a\"\np \"b\"\np \"c\"\np \"d\"", 10, 3); // 2 visible rows
+        let mut a = app(|| bx!([p!("a"), p!("b"), p!("c"), p!("d")]), 10, 3); // 2 visible rows
         assert_eq!(a.cursor.row(), None);
         a.on_key(ch('j'));
         assert_eq!(a.top, 1);
@@ -934,7 +974,7 @@ mod tests {
 
     #[test]
     fn cursor_keys_scroll_the_view_to_follow() {
-        let mut a = app(&long_page(), 30, 11);
+        let mut a = app(long_page, 30, 11);
         a.on_key(ch('j')); // first -> last button
         assert_eq!(row_of(&a), 41);
         assert_eq!(a.top, 32);
@@ -945,7 +985,7 @@ mod tests {
 
     #[test]
     fn all_mode_walks_every_line_and_scrolls() {
-        let mut a = app(&long_page(), 30, 6); // 5 visible rows
+        let mut a = app(long_page, 30, 6); // 5 visible rows
         a.on_key(ch('m'));
         for _ in 0..7 {
             a.on_key(ch('j'));
@@ -958,8 +998,11 @@ mod tests {
 
     #[test]
     fn editing_keeps_the_caret_row_visible() {
-        let src = "input.size:10 \"name\" \"hello world foo bar baz\"\n";
-        let mut a = app(src, 10, 3); // 2 visible rows
+        let mut a = app(
+            || input!({ size: "10" }, Text, "name", "hello world foo bar baz"),
+            10,
+            3,
+        ); // 2 visible rows
         a.on_key(ch('i'));
         a.on_key(ch('!'));
         let caret_row = a
@@ -973,7 +1016,7 @@ mod tests {
 
     #[test]
     fn resize_relayouts_and_keeps_the_cursor_on_its_element() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('j'));
         assert_eq!(a.cursor.current(&a.page).unwrap().input, Some(1));
@@ -984,14 +1027,14 @@ mod tests {
 
     #[test]
     fn a_page_that_fails_layout_shows_the_error_instead_of_crashing() {
-        let a = app("p.size:wide \"x\"", 10, 5);
+        let a = app(|| p!({ size: "wide" }, "x"), 10, 5);
         assert!(a.notice.as_deref().unwrap().contains("not a valid size"));
         assert!(a.page.rows.is_empty());
     }
 
     #[test]
     fn copy_selection_copies_the_line_or_the_edited_value() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.copy_selection();
         assert_eq!(a.take_copy().as_deref(), Some("Home"));
         assert_eq!(a.take_copy(), None);
@@ -1004,7 +1047,7 @@ mod tests {
 
     #[test]
     fn scroll_lines_moves_the_view_and_clamps() {
-        let mut a = app(&long_page(), 30, 11);
+        let mut a = app(long_page, 30, 11);
         a.scroll_lines(3);
         assert_eq!(a.top, 3);
         a.scroll_lines(-10);
@@ -1015,7 +1058,7 @@ mod tests {
 
     #[test]
     fn status_describes_the_state() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         let s = a.status();
         assert!(s.contains("[focused]") && s.contains("line 3/6"), "{s}");
         a.on_key(ch('m'));
@@ -1030,7 +1073,7 @@ mod tests {
 
     #[test]
     fn keys_with_ctrl_or_alt_never_type_text() {
-        let mut a = app(SRC, 40, 20);
+        let mut a = app(src, 40, 20);
         a.on_key(ch('j'));
         a.on_key(ch('i'));
         a.on_key(KeyPress::new(

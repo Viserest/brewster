@@ -1,45 +1,37 @@
-//! Pages the browser writes itself: the new-tab page and the error page.
+//! Pages the browser writes itself: the new-tab page and the error page. They are built
+//! with the same SDK as any page.
 
-/// A string literal that needs no escaping: a raw string with enough `#`s. Newlines become
-/// spaces (a page line is one paragraph here).
-pub fn raw(s: &str) -> String {
-    let s = s.replace(['\n', '\r'], " ");
-    let mut n = 1;
-    while s.contains(&format!("\"{}", "#".repeat(n))) {
-        n += 1;
-    }
-    let h = "#".repeat(n);
-    format!("r{h}\"{s}\"{h}")
-}
+use cre::*;
 
-pub fn new_tab(apps: &[String], hints: &[String]) -> String {
-    let mut s = String::new();
-    s.push_str(&format!("h1 {}\n", raw("brewster")));
-    s.push_str(&format!("p {}\n", raw("A browser for .cre pages.")));
-    s.push_str("p \"\"\n");
+pub fn new_tab(apps: &[String], hints: &[String]) -> Element {
+    let e = bx!([
+        h1!("brewster"),
+        p!("A browser for Rust pages."),
+        p!(""),
+    ]);
     for h in hints {
-        s.push_str(&format!("p {}\n", raw(h)));
+        e.push(p!(h.replace(['\n', '\r'], " ")));
     }
-    s.push_str("p \"\"\n");
-    s.push_str(&format!("link {} {}\n", raw("about:settings"), raw("Open settings")));
-    s.push_str("p \"\"\n");
-    s.push_str(&format!("h3 {}\n", raw("Applications")));
+    e.push(p!(""));
+    e.push(link!("about:settings", "Open settings"));
+    e.push(p!(""));
+    e.push(h3!("Applications"));
     if apps.is_empty() {
-        s.push_str(&format!("p {}\n", raw("none installed")));
+        e.push(p!("none installed"));
     }
     for a in apps {
-        s.push_str(&format!("p {}\n", raw(&format!("- {}", a))));
+        e.push(p!(format!("- {}", a)));
     }
-    s
+    e
 }
 
-pub fn error(url: &str, message: &str) -> String {
-    let mut s = String::new();
-    s.push_str(&format!("h2 {}\n", raw("Cannot open this page")));
-    s.push_str(&format!("p {}\n", raw(url)));
-    s.push_str("p \"\"\n");
-    s.push_str(&format!("p.fg:red {}\n", raw(message)));
-    s.push_str("p \"\"\n");
-    s.push_str(&format!("link {} {}\n", raw("about:newtab"), raw("Go to the new tab page")));
-    s
+pub fn error(url: &str, message: &str) -> Element {
+    bx!([
+        h2!("Cannot open this page"),
+        p!(url.replace(['\n', '\r'], " ")),
+        p!(""),
+        p!({ fcolor: "red" }, message.replace(['\n', '\r'], " ")),
+        p!(""),
+        link!("about:newtab", "Go to the new tab page"),
+    ])
 }

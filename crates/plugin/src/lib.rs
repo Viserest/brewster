@@ -1,18 +1,21 @@
 //! Plugins and applications.
 //!
-//! A *plugin* is code a page (or the user) hands to the browser. It comes in three forms:
+//! A *plugin* is code a page (or the user) hands to the browser: a `cre` page module. It
+//! comes in three forms:
 //!
-//! 1. [`Plugin::Compiled`]: compiled on the server and sent as bytes, so the client cannot
-//!    easily read the code;
-//! 2. [`Plugin::Source`]: `.cre` text compiled on the client;
-//! 3. [`Plugin::Url`]: a URL of either of the above, fetched when needed.
+//! 1. [`Plugin::Wasm`]: already compiled, so nothing needs to be built here;
+//! 2. [`Plugin::Source`]: Rust source, compiled to wasm on this computer (and cached);
+//! 3. [`Plugin::Url`]: a URL of either of the above, fetched when needed. When the source
+//!    cannot be compiled here, the pre-compiled `.wasm` beside it is requested instead.
 //!
 //! An *application* ([`AppKey`]) is scoped like a service worker: an authority (domain or
 //! address) plus a path. Plugins installed for an application run, in the order they were
 //! installed, on every page whose URL falls under it. They are saved to disk, so they run
 //! again after a reload even when the connection is gone.
 
+mod compile;
 mod store;
+pub use compile::{Compiler, load_module, module_from_bytes, wasm_sibling};
 pub use store::{Entry, Registry, hex, unhex};
 
 use std::{
@@ -24,7 +27,6 @@ use std::{
 };
 
 use location::{Loader, Url};
-use parser::Stmt;
 
 // ── Uuid ────────────────────────────────────────────────────────────
 
@@ -103,7 +105,7 @@ impl fmt::Debug for Uuid {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginError {
-    /// The code does not lex, parse or decode.
+    /// The code does not compile and no pre-compiled module could be had.
     Compile(String),
     /// A plugin URL could not be fetched and nothing is cached.
     Fetch(String),
@@ -148,72 +150,40 @@ impl std::error::Error for PluginError {}
 
 // ── Plugin ──────────────────────────────────────────────────────────
 
+/// The first bytes of every wasm module.
+pub const WASM_MAGIC: &[u8] = b"\0asm";
+
+pub fn is_wasm(bytes: &[u8]) -> bool {
+    bytes.starts_with(WASM_MAGIC)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plugin {
-    /// Compiled bytes (see `lexer::encode`), usually produced by a server.
-    Compiled(Vec<u8>),
-    /// `.cre` text, compiled by the client.
+    /// An already compiled module (`.wasm`), usually made by the plugin's author.
+    Wasm(Vec<u8>),
+    /// Rust source (a `cre` page module), compiled to wasm on this computer.
     Source(String),
-    /// Where to get compiled bytes or `.cre` text. Relative URLs are resolved against the
-    /// page that uses the plugin.
+    /// Where to get either of the above. Relative URLs are resolved against the page that
+    /// uses the plugin. If the source behind it cannot be compiled here, the `.wasm` next
+    /// to it is fetched instead.
     Url(String),
 }
 
-const MAGIC: &[u8] = b"CREB";
-
-fn compile_error(e: String) -> PluginError {
-    PluginError::Compile(e)
-}
-
-/// Parses either compiled bytes or `.cre` text.
-pub fn program_from_bytes(bytes: &[u8]) -> Result<Vec<Stmt>, PluginError> {
-    if bytes.starts_with(MAGIC) {
-        let toks = lexer::decode(bytes).map_err(compile_error)?;
-        parser::parse(toks).map_err(compile_error)
-    } else {
-        let text = std::str::from_utf8(bytes).map_err(|_| {
-            PluginError::Compile("plugin is neither compiled nor UTF-8 text".into())
-        })?;
-        parser::parse_source(text).map_err(compile_error)
-    }
-}
-
 impl Plugin {
-    /// Compiles `.cre` text now, so the result hides the code from casual reading.
-    pub fn compile(source: &str) -> Result<Plugin, PluginError> {
-        let toks = lexer::lex(source).map_err(compile_error)?;
-        parser::parse(toks.clone()).map_err(compile_error)?;
-        Ok(Plugin::Compiled(lexer::encode(&toks)))
-    }
-
-    /// Checks code that is already in hand. URLs are not fetched here.
+    /// Checks what can be checked without compiling: that wasm is wasm and that source or
+    /// a URL is not empty. Source is compiled when the plugin first runs.
     pub fn validate(&self) -> Result<(), PluginError> {
         match self {
-            Plugin::Compiled(b) => {
-                if !b.starts_with(MAGIC) {
-                    return Err(PluginError::Compile(
-                        "not a compiled plugin (bad magic)".into(),
-                    ));
-                }
-                program_from_bytes(b).map(|_| ())
+            Plugin::Wasm(b) if !is_wasm(b) => Err(PluginError::Compile(
+                "not a wasm module (bad magic)".into(),
+            )),
+            Plugin::Source(s) if s.trim().is_empty() => {
+                Err(PluginError::Compile("empty plugin source".into()))
             }
-            Plugin::Source(s) => parser::parse_source(s).map(|_| ()).map_err(compile_error),
-            Plugin::Url(u) => {
-                if u.trim().is_empty() {
-                    Err(PluginError::Fetch("empty plugin URL".into()))
-                } else {
-                    Ok(())
-                }
+            Plugin::Url(u) if u.trim().is_empty() => {
+                Err(PluginError::Fetch("empty plugin URL".into()))
             }
-        }
-    }
-
-    /// The program of a plugin whose code is in hand; `None` for a bare URL.
-    pub fn local_program(&self) -> Option<Result<Vec<Stmt>, PluginError>> {
-        match self {
-            Plugin::Compiled(b) => Some(program_from_bytes(b)),
-            Plugin::Source(s) => Some(parser::parse_source(s).map_err(compile_error)),
-            Plugin::Url(_) => None,
+            _ => Ok(()),
         }
     }
 
@@ -227,13 +197,23 @@ impl Plugin {
             .map_err(|e| PluginError::Fetch(format!("{}: {}", target, e)))
     }
 
-    /// The program of this plugin, fetching a URL when needed (no caching here).
-    pub fn program(&self, base: &Url, loader: &dyn Loader) -> Result<Vec<Stmt>, PluginError> {
+    /// The wasm module of this plugin: compiled, fetched or both. No caching of fetched
+    /// bytes here (the registry does that); compiled output is cached by the compiler.
+    pub fn module(
+        &self,
+        base: &Url,
+        loader: &dyn Loader,
+        compiler: &Compiler,
+    ) -> Result<Vec<u8>, PluginError> {
         match self {
-            Plugin::Url(u) => program_from_bytes(&Plugin::fetch(u, base, loader)?),
-            other => other
-                .local_program()
-                .expect("non-URL plugins carry their code"),
+            Plugin::Wasm(b) => Ok(b.clone()),
+            Plugin::Source(s) => compiler.compile(s).map_err(PluginError::Compile),
+            Plugin::Url(u) => {
+                let target = base
+                    .resolve(u)
+                    .map_err(|e| PluginError::Fetch(format!("{}: {}", u, e)))?;
+                load_module(&target, loader, compiler)
+            }
         }
     }
 }

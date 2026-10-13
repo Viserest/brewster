@@ -4,6 +4,8 @@
 //! (`Rc`) so a script can hold a node while the page keeps it. [`Element`] is a plain
 //! snapshot of a node and its subtree: the input of layout.
 
+pub mod wire;
+
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -269,6 +271,33 @@ impl Node {
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// A detached copy of this node and its subtree, with new ids.
+    pub fn deep_clone(&self) -> Node {
+        let d = self.0.borrow();
+        let copy = new_data(&d.tag);
+        {
+            let mut c = copy.0.borrow_mut();
+            c.style = d.style.clone();
+            c.args = d.args.clone();
+        }
+        for k in &d.children {
+            let kc = k.deep_clone();
+            kc.0.borrow_mut().parent = Rc::downgrade(&copy.0);
+            copy.0.borrow_mut().children.push(kc);
+        }
+        drop(d);
+        copy
+    }
+
+    /// Adds `child` as the first child (moving it when it already has a parent).
+    pub fn prepend(&self, child: &Node) -> Result<Node, NodeError> {
+        self.append(child)?;
+        let mut d = self.0.borrow_mut();
+        let last = d.children.pop().expect("just appended");
+        d.children.insert(0, last);
+        Ok(child.clone())
     }
 
     /// A snapshot of this node and its subtree.

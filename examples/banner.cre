@@ -1,5 +1,0 @@
-// The source of the plugin that compiled.cre ships as bytes.
-p.fcolor:yellow "Hello from a compiled plugin"
-fn shout(self) {
-  root.tree.query("#status").unwrap().set_text("The compiled plugin's function ran")
-}

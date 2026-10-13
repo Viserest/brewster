@@ -1,6 +1,6 @@
 # Brewster
 
-A web browser written in Rust, driven by a Rust/Lua-like language in `.cre` files which create the structures, styles and scripts.
+A web browser written in Rust. A page is a Rust file (or a compiled `.wasm` module) that builds its elements, styles and handlers with the macros of the `cre` SDK crate.
 
 Ideas came from these videos:\
 Facedev:
@@ -8,21 +8,24 @@ Facedev:
 - https://www.youtube.com/watch?v=37ISfJ2NSXQ
 - https://www.youtube.com/watch?v=qiOtinFFfk8
 
-Tsoding:
+Tsoding:\
 - https://www.youtube.com/watch?v=5YSj7mAAQQ0
 
 ## Run
 
 ```
-cargo run -p brewster -- examples/demo.cre                  # GUI window
-cargo run -p brewster-cli -- examples/demo.cre              # interactive terminal viewer
-cargo run -p brewster-cli -- a.cre b.cre                    # two tabs
-cargo run -p brewster-cli -- --once examples/demo.cre       # print once, with colors
-cargo run -p brewster-cli -- --width 60 --plain examples/demo.cre
+cargo run -p brewster -- examples/demo.rs                    # GUI window
+cargo run -p brewster -- examples/demo.wasm                  # Using pre-compiled wasm
+cargo run -p brewster-cli -- examples/demo.rs                # interactive terminal viewer
+cargo run -p brewster-cli -- a.rs b.rs                       # two tabs
+cargo run -p brewster-cli -- --once examples/demo.rs         # print once, with colors
+cargo run -p brewster-cli -- --once --plain examples/demo.rs # print once, without colors
 cargo test --workspace
 ```
 
-Requires Rust 1.85+ (edition 2024, resolver 3). `Cargo.lock` lists the workspace crates and `crossterm`; the first build adds `eframe` and its dependencies.
+Requires Rust 1.85+ (edition 2024, resolver 3). The first build downloads `crossterm` and `eframe`; nothing else is fetched from the network, and the `crates/*` libraries use only `std`.
+
+A `.rs` page is compiled to wasm by calling `rustc` directly (no cargo, no other crates): the browser needs `rustc`, the `wasm32-unknown-unknown` target and the prebuilt `cre` rlib (`BREWSTER_SDK_DIR`, see `plugin::Compiler::detect`). The result is cached by a hash of the source, the compiler and the SDK. When a page cannot be compiled here, the `.wasm` next to it (same URL, other extension) is requested instead.
 
 Both apps take the same options:
 
@@ -108,7 +111,7 @@ All headers are wrapped in `=` marks: `h1` uppercase with `===`; `h2` uppercase;
 
 ### Links
 
-`link TARGET "text"` opens when clicked or when Enter is pressed on it. Relative targets are resolved against the page's address (`file:` paths and `http://`; `https://` is not supported because `std` has no TLS, and the page says so). Opening a link in a new tab or window keeps the current page.
+`link!("target", "text")` opens when clicked or when Enter is pressed on it. Relative targets are resolved against the page's address (`file:` paths and `http://`; `https://` is not supported because `std` has no TLS, and the page says so). Opening a link in a new tab or window keeps the current page.
 
 ## Styles
 
@@ -119,66 +122,71 @@ NOTHING
 Outside in: `margin`, `border`, `pad`, content, each with one shorthand:
 
 ```
-.pad:1            all sides
-.pad:2,1          x,y
-.pad:1,2,3,4      top,right,bottom,left
-.pad-x:2  .pad-y:1
+pad: "1"            all sides
+pad: "2,1"          x,y
+pad: "1,2,3,4"      top,right,bottom,left
+pad_x: "2", pad_y: "1"
 ```
 
-`border` is 0 or 1 cell per side, drawn with box characters; `.border-color:cyan` sets its color. `size:W,H` sets the box in cells; each value is a number, `min` (the content) or `max` (what the parent allows). The default is `min,min`, so backgrounds, underlines and borders end right after the content. One value applies to both axes (`size:12` is 12x12; use `size:12,min` for width only). Text and inputs wrap at the width.
+`border` is 0 or 1 cell per side, drawn with box characters (`border: "1"`, `"1,0"`, `"1,0,0,1"`); `border_color: "cyan"` sets its color. `size: "W,H"` sets the box in cells; each value is a number, `min` (the content) or `max` (what the parent allows). The default is `min,min`, so backgrounds, underlines and borders end right after the content. One value applies to both axes (`size: "12"` is 12x12; use `size: "12,min"` for width only). Text and inputs wrap at the width.
 
 Headers differ in weight, underline and size; there are no `=` marks. `h1` size 3, bold, uppercase; `h2` size 2, bold, uppercase; `h3` size 2, uppercase; `h4` bold; `h5` bold, underlined; `h6` underlined. Font sizes need a graphical viewer (`view.scale_headers`); a terminal cannot draw them and shows the weight, underline and case only.
 
-## The language
+## Pages
 
-Elements, styles and scripts share one grammar. Elements: `box`, `h1`..`h6`, `p`, `span`, `link`, `input`, `button`, `pre`; styles are `.key:value` modifiers; a `{ ... }` body holds children.
+A page is a Rust file that uses the `cre` crate: tag macros build [`Element`]s and `cre::page!(page);` exports the function that returns the root. See `examples/demo.rs`.
+
+```rust
+use cre::*;
+cre::page!(page);
+
+fn page() -> Element {
+    let card = bx!({ pad: "1", border: "1" }, [p!("template children are skipped when extended")]);
+    bx!({ extends: &card, id: "main" }, [h1!("Hello")])
+}
+```
+
+Tags (`box` is a Rust keyword, so it is `bx!`):
 
 ```
-let card = box.pad:1.border:1 { p "template children are skipped when extended" }
-box.extends:card.id:main { h1 "Hello" }
+bx!( {attributes}? , [children]? )              h1!..h6!, p!, span!, pre!, button!:
+p!( {attributes}? , "text" )                      text only, no children
+link!( {attributes}? , "href", "label" )
+input!( {attributes}? , Text|Password, "name", "value" )
 ```
 
-- `let name = <element>` is a template; `.extends:name` copies its style, skips its children, and carries over its `.before:` / `.after:` content.
-- Everything else is a script: `let [mut]`, `fn`, `if` / `else if` / `else`, `match` (patterns `_`, names, numbers, strings, `true`/`false`, `Some(..)`, `None`, `Ok(..)`, `Err(..)`), `while`, `return`, closures `|a, b| a + b`, `+ - * / %`, comparisons, `&& || !`, lists, `{expr}` inside quoted strings (`{{` and `}}` are literal braces). Types (`x: String`, `-> Result<(), PluginError>`, `type X = ...`) are accepted but not checked.
-- An element written in an element body (or at the top level) is appended to it; in a function body the last expression is the result.
-- `.id:name` names an element for `root.tree.query("#name")`.
+- The `{ }` group is the attributes, `name: value` separated by commas; the `[ ]` group is the children. Both are optional.
+- `name` must be a variant of `cre::Attr`: a misspelled name does not compile, and rustc suggests the closest one. There are no hyphens in names: `border_color`, `align_x`, `pad_x`.
+- Every value is written as a string and converted with `Into`. `Color`, `Pad` and `Border` are enums inside `Attr` (`Attr::bcolor(Color)`, `Attr::pad(Pad)`, `Attr::border(Border)`): `"white"` / `"#181818"` become a `Color`, `"1,0,1,2"` a `Pad`, `"1"` a `Border`. A value that does not parse is kept as `Invalid(text)` and reported by the browser when the page is drawn, not at compile time.
+- `extends: &template` copies the style of a template element, skips its children, and carries over its `before` / `after` content. `before: bx!(..)` and `after: bx!(..)` add content around the element's own children.
+- `id: "name"` names an element for `root.tree.query("#name")`.
 
 ### Tree
 
-`root.tree` is the root node of the current document. Node methods: `query(selector) -> Result<Node, QueryError>` (selectors `*`, `tag`, `#id`, `tag#id`, descendants only), `query_all(selector)`, `create(Tag::p) -> Result<Node, NodeError>`, `append(node) -> Result<Node, NodeError>` (only `root` and `box` hold children; moving a node into its own descendant is an error), `remove(node)`, `children()`, `parent()`, `tag()`, `text()`, `set_text(text)`, `get_style(key)`, `set_style(key, value)`, `get_arg(i)`, `set_arg(i, value)`. Errors are values (`Result`), never crashes.
+A handler gets `root: &Root` (passed in, never global). `root.tree` has `query(selector) -> Option<Element>` (selectors `*`, `tag`, `#id`, `tag#id`, descendants only), `query_all`, `find(id)` and `append(&element)`. An `Element` is a cheap shared handle: `set_text`, `text`, `set`, `style`, `push`, `extend`, `children`, `parent`, `remove`, `query`, `query_all`, `deep_clone`. Mistakes (children on a leaf and the like) are recorded and shown as diagnostics, never crashes.
 
 ### Buttons
 
-`button.onclick:name("literal", 5, true) "Submit"` calls `fn name(self, ...)` when clicked (mouse or Enter). `self` is the clicked element; the extra arguments are the literals. A function error shows on the status line. See `examples/demo.cre`.
+`button!({ onclick: |this: &Element, root: &Root| greet(this, root) }, "Submit")` runs the closure when the button is clicked (mouse or Enter). `this` is the clicked element. After a handler runs, the page is read back and laid out again. A failure shows on the status line.
 
 ### Plugins and applications
 
-```
-root.plugin.oneshot(plugin: Plugin) -> Result<(), PluginError>
-root.plugin.install(url_app: String, plugin: Plugin) -> Result<Uuid, PluginError>
-root.plugin.list(url_app: String) -> Result<List<Plugin>, PluginError>
-root.plugin.update(id: Uuid, plugin: Plugin) -> Result<(), PluginError>
-root.plugin.delete(id: Uuid) -> Result<(), PluginError>
-root.plugin.clear(url_app: String) -> Result<(), PluginError>
-```
+A **plugin** is a page module the browser keeps and runs next to a page. It is one of:
 
-A script in a `.cre` file is not "a script" the browser keeps; a **plugin** is. A plugin is one of:
+1. `Plugin::Wasm(bytes)`: already compiled, nothing to build;
+2. `Plugin::Source(text)`: Rust source, compiled to wasm on this computer and cached;
+3. `Plugin::Url(url)`: a url of either of the above, fetched when needed. If the source behind it cannot be compiled here, the `.wasm` beside it is requested automatically.
 
-1. compiled on the server and sent as bytes (`Plugin::compiled("<hex>")`): the client cannot easily read the code (`Plugin::compile(source)` makes one);
-2. `.cre` source compiled on the client (`Plugin::source("...")`);
-3. a url of either of the above (`Plugin::url("https://...")`), fetched when it is needed.
-
-An **application** (the `url_app`) is scoped like a service worker: the authority (domain or ip) of the page that installs it, plus a path. `url_app` is that path: `"shop"` on a page of `example.com` means `example.com/shop`, which covers that page and everything below it (`""` or `"/"` is the whole domain; a leading `example.com/` is accepted; `..` is refused). Several plugins can be installed per application; they run in the order installed, after the page's own script, on every matching page. They are saved to the plugin store before they first run, so they run again on reload even when the connection is lost. Installing does not run the plugin at once: it runs on the next load. Outside an application, `oneshot` runs a plugin once, right now. See `examples/plugins.cre`.
+An **application** (`plugin::AppKey`) is scoped like a service worker: the authority (domain or ip) of the page that installs it, plus a path. `"shop"` on a page of `example.com` means `example.com/shop`, which covers that page and everything below it (`""` or `"/"` is the whole domain; a leading `example.com/` is accepted; `..` is refused). Several plugins can be installed per application; they run in the order installed, after the page itself, on every matching page. They are saved to the plugin store (`plugin::Registry`) before they first run, so they run again on reload even when the connection is lost. A plugin that fails is left out and reported; the page and the other plugins still run. The Rust SDK does not yet expose `install` to page code; the registry is driven from the browser side.
 
 ## Project Tree
 
 ```
 crates/
-  lexer     source text -> tokens (and the compiled byte format of plugins)
-  parser    tokens -> AST: elements, styles, let / fn / if / match / while
-  tree      the live document: nodes you can query, create and append
-  script    the interpreter: runs a page's script into the tree, root.tree, root.plugin, onclick
-  plugin    plugins, applications, Uuid and the on-disk plugin store
+  cre       the page SDK: tag macros, Attr / Color / Pad / Border / InputType, Element, Root, wasm exports
+  tree      the live document: nodes you can query, create and append, and the binary format pages are sent in
+  plugin    plugins, applications, Uuid, the plugin store, and the rustc -> wasm compiler with its cache
+  host      running page modules: Guest / Runner traits, Session (a page and its plugins), Host
   location  urls and loaders (file:, http:)
   style     colors, spacing, alignment, entities
   layout    element snapshot -> rows of styled spans (renderer-agnostic)
@@ -187,23 +195,24 @@ crates/
   settings  key/value settings with nesting; toml, json and yaml; the search index
   profile   a profile: settings, tabs, applications, history; saved as toml / json / yaml
   browser   tabs, links, key bindings, the settings box, the screen of cells
-  engine    parse -> run -> layout in one call
+  engine    load (fetch, compile if needed) -> run -> layout in one call
 apps/
   brewster-cli   terminal viewer (crossterm)
   brewster       GUI viewer (egui)
 examples/
-  demo.cre       elements, templates, a button with an onclick function
-  plugins.cre    applications and plugins
+  demo.rs        elements, templates, a button with an onclick closure
+  banner.rs      a small page that works as a plugin
 ```
 
 Logic lives in `crates/*`; UI lives in `apps/*`. The crates use only `std`; `brewster-cli` uses `crossterm` and `brewster` uses `eframe` (egui).
 
-The old `resolver` crate is gone: it merged `let` / `extends` / `before` / `after` into a static tree once, which cannot work when scripts change the tree at runtime. The interpreter (`script`) now builds the live tree (`tree`) with the same template rules, and layout reads a snapshot of it.
+The text language and its `lexer`, `parser` and `script` crates are gone: pages are Rust, so `rustc` is the parser and the type checker, and the `cre` crate builds the live tree (`tree`) with the template rules (`extends`, `before`, `after`). Layout reads a snapshot of it.
 
 ## Known limits
 
 - https is not supported (std has no TLS); http and files work.
-- Types are parsed but not checked; `doc.onload`-style hooks do not exist (a page's own script runs at load, plugins after it).
+- The wasm engine is not part of this workspace yet: `host::Unavailable` refuses modules with a message, and `host::MapRunner` runs pages compiled into the program (tests and tooling). A `Runner` backed by a wasm interpreter (for example `wasmi`) must be added, and it needs a crate from the network.
+- A `.rs` page needs `rustc`, the `wasm32-unknown-unknown` target and the prebuilt SDK on the computer that opens it; otherwise only `.wasm` pages work.
 - History is part of the profile format but nothing records it yet.
 - The terminal cannot show different font sizes; "new window" is a tab there.
 - The egui app was written against the egui 0.29 API but has not been built against the real crates in the environment this was developed in; the logic it uses (`browser`, `grid`) is unit-tested.

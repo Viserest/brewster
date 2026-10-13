@@ -161,9 +161,9 @@ mod tests {
 
     #[test]
     fn parses_flags_and_urls() {
-        let o = parse(&["--profile", "work", "a.cre", "https://x.y"]).unwrap();
+        let o = parse(&["--profile", "work", "a.rs", "https://x.y"]).unwrap();
         assert_eq!(o.profile.as_deref(), Some("work"));
-        assert_eq!(o.urls, vec!["a.cre".to_string(), "https://x.y".to_string()]);
+        assert_eq!(o.urls, vec!["a.rs".to_string(), "https://x.y".to_string()]);
         assert!(parse(&["--private"]).unwrap().private);
         assert!(parse(&["-h"]).unwrap().help);
         let o = parse(&["--", "--weird"]).unwrap();
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn profile_args_select_the_same_profile() {
-        let o = parse(&["--profile", "work", "x.cre"]).unwrap();
+        let o = parse(&["--profile", "work", "x.rs"]).unwrap();
         assert_eq!(
             o.profile_args(),
             vec!["--profile".to_string(), "work".to_string()]
