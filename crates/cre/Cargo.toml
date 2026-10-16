@@ -6,7 +6,12 @@ edition = "2024"
 [dependencies]
 tree = { path = "../tree" }
 
-# The demo page is built as a library: `cargo build -p cre --example demo`.
+# These example pages are built as a library: `cargo build -p cre --example demo`.
+[[example]]
+name = "index"
+path = "../../examples/index.rs"
+crate-type = ["cdylib"]
+
 [[example]]
 name = "demo"
 path = "../../examples/demo.rs"

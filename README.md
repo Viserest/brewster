@@ -100,36 +100,116 @@ Terminals often cannot send `ctrl-enter` or `shift-enter`, so `t` and `w` work t
 
 Page: `j`/`k`/arrows/Tab move the cursor, `g`/`G` first/last stop, `m` toggles the cursor mode (`focused` = links, inputs and buttons; `all` = every line), `y`/`c` copies the line under the cursor (link text, button label, input value; the terminal sends it to the system clipboard with OSC 52), `enter`/`i` edits an input (`p` or Ctrl+V pastes, Esc/Enter finishes), `space`/`b`/PageDown/PageUp page, `J`/`K` one line, Home/End jump. The mouse wheel scrolls, clicking a tab selects it (middle click or its `×` closes it), clicking a link, button or input uses it. In the terminal, mouse capture is on, so use your terminal's usual modifier (often Shift) to select text with the mouse.
 
-## Structure
+## Attributes
 
-NOTHING
+|                 | Name                 | Value          | Description |
+| --------------- | -------------------- | -------------- | ----------- |
+| **Positional**  | | | |
+|                 | Align                | `Sizing2` [^2] | (Width,Height) of the aligning. [^8] |
+|                 | Origin               | `Sizing2` [^2] | (Width,Height) of the origin. [^8] |
+| **Box Model**   | | | |
+|                 | Background Color     | `Rgb` [^4]     | Background color includes size and padding. |
+|                 | Padding Layer        | `Sizing4` [^3] | Top,Right,Bottom,Left padding outside of previous layer. |
+|                 | Size                 | `Sizing2` [^2] | Width,Height total size. Example: Width_total = Summation {Pad_n(left + right)} + Width_content |
+| **Lines**       | | | |
+|                 | Line                 | `Sizing2` [^2] | Width,Height line |
+|                 | Line Style           | `LineStyle`    | `LineStyle`: Solid, Dotted, Dashed, and Wavy. String allowed but must map into `FontTypecase`. |
+|                 | Line Color           | `Rgb` [^4]     | |
+|                 | Line Radius          | `Sizing4` [^3] | Corner curvature. `Curvature`: Circle, Bowed, or Square. String must map into `Curvature`. `Curvature` maps into `Unit`. |
+|                 | Line Endcap          | `Sizing4` [^3] | Corner endcap style. `Endcap`: Circle, Bowed, Outward, or Square. String must map into `Endcap`. `Endcap` maps into `Unit`. |
+|                 | Line-Shadow          | `Sizing4` [^3] | Top,Right,Bottom,Left line-shadow |
+|                 | Line-Shadow Color    | `Rgb` [^4]     | |
+|                 | Line-Shadow Radius   | `Sizing4` [^3] | Corner curvature. `Curvature`: Circle, Bowed, or Square. String must map into `Curvature`. `Curvature` maps into `Unit`. |
+| **Font**        | | | |
+|                 | Font Color           | `Rgb` [^4]     | |
+|                 | Font Family          | `FontFamily`   | String must map into `FontFamily`. |
+|                 | Font Size            | `Unit` [^1]    | String must map into `FontSize`. `FontSize` maps into `Unit`. |
+|                 | Font Weight          | `Unit` [^1]    | String must map into `FontWeight`. `FontWeight` maps into `Unit`. |
+|                 | Font Typecase        | `FontTypecase` | `FontTypecase`: Uppercase, Lowercase, Titlecase, Camelcase, or Snakecase. String must map into `FontTypecase`. |
+| **Elements**    | | | |
+|                 | Before               | `Element`      | Prependable element |
+|                 | After                | `Element`      | Appendable element |
+|                 | Extends              | `Element`      | Pre/append elements to current element |
+| **Interactive** | | | |
+|                 | Onhover              | Function [^4]  | Called when cursor hovers over element |
+|                 | Onclick              | Function [^4]  | Called when cursor clicks on element |
+|                 | Onload               | Function [^4]  | Called when element loads [^5] |
+|                 | Ondestroy            | Function [^4]  | Called when element is removed [^6] |
 
-### Headers
+[^1]: `Unit` is a relative value thats percentage-based on its parent element. For font size its precentage-based on screen height.
+[^2]: `Sizing2` is 2 `Unit`s
+[^3]: `Sizing4` is 4 `Unit`s
+[^4]: `Rgb` is 3 `u8`s for red, green and blue. String allowed but must map into `Color`. `Color` allowed and maps into `Rgb`.
+[^5]: Handler function callable by wasm. Accepts &[`Element`] as element calling handler function.
+[^6]: Loading event happens on page loading, and element is added to the page.
+[^7]: Destory event happens on removing the element. Closing the page doesn't call this.
+[^8]: `Align`: Left, right or center. String must map into `Align`. `Align` maps into `Unit`.
 
-All headers are wrapped in `=` marks: `h1` uppercase with `===`; `h2` uppercase; `h3` bold, uppercase; `h4` bold; `h5` bold, underlined; `h6` underlined.
+### Examples
 
-### Links
-
-`link!("target", "text")` opens when clicked or when Enter is pressed on it. Relative targets are resolved against the page's address (`file:` paths and `http://`; `https://` is not supported because `std` has no TLS, and the page says so). Opening a link in a new tab or window keeps the current page.
-
-## Styles
-
-NOTHING
-
-### Box Model
-
-Outside in: `margin`, `border`, `pad`, content, each with one shorthand:
-
+#### How to center a box element:
+```rust
+let parent = bx!({}, [
+  bx!({ origin: "center", align: "center" }, []),
+]);
 ```
-pad: "1"            all sides
-pad: "2,1"          x,y
-pad: "1,2,3,4"      top,right,bottom,left
-pad_x: "2", pad_y: "1"
+
+1. Sets child box's origin to center of child box.
+2. Sets child box's align to center of parent box.
+
+[*] Origin's center is calculated using child box's total size.
+[*] Align's center is calculated using parent box's content size.
+
+#### How to add a border:
+```rust
+bx!({
+    pad: vec!["5 10", "1 black", "5 10"],
+}, [])
 ```
 
-`border` is 0 or 1 cell per side, drawn with box characters (`border: "1"`, `"1,0"`, `"1,0,0,1"`); `border_color: "cyan"` sets its color. `size: "W,H"` sets the box in cells; each value is a number, `min` (the content) or `max` (what the parent allows). The default is `min,min`, so backgrounds, underlines and borders end right after the content. One value applies to both axes (`size: "12"` is 12x12; use `size: "12,min"` for width only). Text and inputs wrap at the width.
+1. Padding layers are from left (inner-most) to right (outer-most)
+2. 1st-layer: top/bottom: 5, left-right: 10 *Acts like a css padding*
+3. 2st-layer: all-sides: 1 AND color: black *Acts like a css border*
+4. 3st-layer: top/bottom: 5, left-right: 10 *Acts like a css margin*
 
-Headers differ in weight, underline and size; there are no `=` marks. `h1` size 3, bold, uppercase; `h2` size 2, bold, uppercase; `h3` size 2, uppercase; `h4` bold; `h5` bold, underlined; `h6` underlined. Font sizes need a graphical viewer (`view.scale_headers`); a terminal cannot draw them and shows the weight, underline and case only.
+```rust
+struct Unit(u8);
+struct Rgba(u8, u8, u8, u8);
+enum LineCap { Circle, Square }
+enum LineStyle { Solid, Pattern { length: Unit, gap: Unit, cap: LineCap }, Wavy(Unit) }
+struct Sizing {
+    top: Unit,
+    right: Unit,
+    bottom: Unit, 
+    left: Unit
+}
+enum Layer {
+    Padding(Sizing),
+    Border { size: Sizing, color: Rgba, style: LineStyle },
+}
+struct Attribute {
+    layers: Vec<Layer>,
+}
+```
+
+## Elements
+
+| Name   | Description               | Calling [^1]                 | Default Style |
+| ------ | ------------------------- | --------------------------- | ------------- |
+| Box    | Wrapper for many children | ```bx!({}, [Elements])```   | |
+| H1     | Heading Level 1           | ```h1!({}, text)```         | Align: Center; Font Style: [Uppercase, Underline, Bold] |
+| H2     | Heading Level 2           | ```h2!({}, text)```         | Font Style: [Uppercase, Underline, Bold] |
+| H3     | Heading Level 3           | ```h3!({}, text)```         | Font Style: [Uppercase, Underline] |
+| H4     | Heading Level 4           | ```h4!({}, text)```         | Font Style: [Underline, Bold] |
+| H5     | Heading Level 5           | ```h5!({}, text)```         | Font Style: [Underline] |
+| H6     | Heading Level 6           | ```h6!({}, text)```         | Font Style: [Bold] |
+| P      | Paragraph text            | ```p!({}, text)```          | |
+| Pre    | Pre-formated text         | ```pre!({}, text)```        | Font Family: monospace; Backcolor: Off-Black; Forecolor: Off-White; Border Radius: 5 |
+| Link   | Link to a href with text  | ```link!({}, href, text)``` | Forecolor: Off-Blue; Font Decor: [Underline] |
+| Input  | Collect input for text, radio buttons, checkboxes, sliders, etc | ```input!({}, type, value)``` | Pad: 2,1; Border: 1; Bordercolor: Off-Black; Border Radius: 5; Margin: 2,1 |
+| Button | Paragraph text formated like a input. All elements can have an onclick function but this is specifically for button clicking | ```button!({}, text)``` | [*] Same as input element |
+
+[^1]: All ```{}``` Would include attibute tags. ```bx!({ pad: "1", border: "1" })```
 
 ## Pages
 
