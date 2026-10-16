@@ -6,10 +6,13 @@ mod keymap;
 pub mod launch;
 mod overlay;
 mod pages;
+pub mod geometry;
 mod screen;
+mod theme;
 
 pub use keymap::{ACTIONS, Action, Binding, Button, Keymap, label, parse_binding};
-pub use screen::{Cell, Look, Screen};
+pub use screen::{Cell, Look, Screen, Shape};
+pub use theme::{NAMES as THEME_NAMES, Theme};
 pub use viewer::{Key, KeyPress, Mods};
 
 use std::cell::RefCell;
@@ -38,6 +41,9 @@ pub struct Capabilities {
     pub windows: bool,
     /// Text can be drawn at different sizes (headers get their font sizes).
     pub scaling: bool,
+    /// Shapes can be drawn behind the text ([`Screen::shapes`]): rounded tabs, pill
+    /// buttons, fading borders. A terminal can only show a theme's colors.
+    pub shapes: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,8 +128,43 @@ pub struct Browser {
     notice: Option<String>,
     effects: Vec<Effect>,
     caps: Capabilities,
+    theme: Theme,
     quit: bool,
     follower: bool,
+}
+
+/// The theme `general.theme` names (the default one for anything else).
+fn theme_of(s: &Settings) -> Theme {
+    Theme::named(&s.str("general.theme")).unwrap_or_else(|| Theme::named("default").unwrap())
+}
+
+const fn theme_full() -> f32 {
+    999.0
+}
+
+/// The shape of a tab (or a button in the tab bar) that starts at cell `x` of row `y` and is
+/// `w` cells wide, without a fill. Tabs of a top bar that are flat at the bottom (a tab that
+/// merges into the page) reach the bar's lower edge; the radii are turned over for a bar
+/// at the bottom and rounded all round in a sidebar.
+fn tab_shape(th: &Theme, pos: BarPos, x: f32, y: f32, w: f32, active: bool) -> Shape {
+    let r = th.tab.radii;
+    let radii = match pos {
+        BarPos::Top => r,
+        BarPos::Bottom => [r[3], r[2], r[1], r[0]],
+        BarPos::Left | BarPos::Right => [r.iter().cloned().fold(0.0, f32::max); 4],
+    };
+    let flat = pos == BarPos::Top && r[2] == 0.0 && r[3] == 0.0 && r[0] > 0.0;
+    // Idle bubbles are a little smaller than the active one, so it stands out.
+    let (top, bottom) = if flat && active {
+        (0.14, 0.0)
+    } else if active {
+        (0.06, 0.06)
+    } else {
+        (0.16, 0.16)
+    };
+    let mut sh = Shape::new(x + 0.08, y + top, w - 0.16, 1.0 - top - bottom);
+    sh.radii = radii;
+    sh
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -164,6 +205,7 @@ impl Browser {
     ) -> Browser {
         let (keymap, problems) = Keymap::from_settings(&profile.settings);
         let saved_settings = profile.settings.clone();
+        let theme = theme_of(&profile.settings);
         Browser {
             profile,
             saved_settings,
@@ -179,6 +221,7 @@ impl Browser {
             notice: problems.first().cloned(),
             effects: Vec::new(),
             caps: Capabilities::default(),
+            theme,
             quit: false,
             follower: false,
         }
@@ -353,7 +396,23 @@ impl Browser {
         }
     }
 
+    /// How a window draws controls; `None` where shapes are not drawn.
+    fn controls(&self) -> Option<engine::Controls> {
+        self.shapes_on().then_some(self.theme.controls)
+    }
+
+    /// Whether shapes are drawn: the frontend can and the theme wants them.
+    fn shapes_on(&self) -> bool {
+        self.caps.shapes && self.theme.graphical
+    }
+
+    /// The theme in use.
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
     fn configure(&self, v: &mut Viewer) {
+        v.set_controls(self.controls());
         let s = self.settings();
         v.set_options(
             s.bool("view.fill_window"),
@@ -379,8 +438,23 @@ impl Browser {
         }
         match target {
             Target::Same => {
-                let tab = self.make_tab(&url);
-                self.tabs[self.active] = tab;
+                let here = &self.tabs[self.active].url;
+                let same_page = url.scheme() == here.scheme()
+                    && url.authority() == here.authority()
+                    && url.path() == here.path()
+                    && url.query() == here.query()
+                    && url.scheme() != "about";
+                if same_page && url.fragment() != here.fragment() {
+                    // Only the fragment changed: the page stays, and learns the address.
+                    let tab = &mut self.tabs[self.active];
+                    tab.url = url.clone();
+                    if let Err(e) = tab.viewer.set_address(url) {
+                        self.notice = Some(e);
+                    }
+                } else {
+                    let tab = self.make_tab(&url);
+                    self.tabs[self.active] = tab;
+                }
             }
             Target::Tab => self.insert_tab_after_active(url),
             Target::Window => {
@@ -513,6 +587,11 @@ impl Browser {
         self.keymap = km;
         if let Some(p) = problems.first() {
             self.notice = Some(p.clone());
+        }
+        self.theme = theme_of(self.settings());
+        let controls = self.controls();
+        for t in &mut self.tabs {
+            t.viewer.set_controls(controls);
         }
         let (fill, scale, mode) = {
             let s = self.settings();
@@ -981,48 +1060,100 @@ impl Browser {
         }
         self.paint_page(&mut s, g.content);
         let status = clip(&self.status(), self.cols);
-        s.fill(0, g.status_row, self.cols, 1, Look::REVERSE);
-        s.text(0, g.status_row, &status, Look::REVERSE, self.cols);
+        let chrome = self.theme.chrome;
+        match (chrome.status_bg, chrome.status_fg) {
+            (Some(bg), fg) => {
+                s.fill_color(0, g.status_row, self.cols, 1, Some(bg));
+                s.text_colored(0, g.status_row, &status, fg, Some(bg), false, self.cols);
+            }
+            _ => {
+                s.fill(0, g.status_row, self.cols, 1, Look::REVERSE);
+                s.text(0, g.status_row, &status, Look::REVERSE, self.cols);
+            }
+        }
         self.paint_overlay(&mut s);
+        if let (Some(bg), Some(fg)) = (self.theme.page_bg, self.theme.page_fg) {
+            s.apply_colors(bg, fg);
+        }
         s
     }
 
+    /// The tab bar: reverse video in the `tui` theme, otherwise colored, and in a window
+    /// every tab is a rounded bubble.
     fn paint_tab_bar(&self, s: &mut Screen, bar: Rect, pos: BarPos) {
-        s.fill(bar.x, bar.y, bar.w, bar.h, Look::PLAIN);
-        for it in self.tab_items(bar, pos) {
-            let look = if it.active {
-                Look::BOLD_REVERSE
-            } else {
-                Look::PLAIN
-            };
-            s.text(it.x, it.y, &it.text, look, it.w);
+        let th = &self.theme;
+        let gfx = self.shapes_on();
+        let items = self.tab_items(bar, pos);
+        if !th.colored() {
+            s.fill(bar.x, bar.y, bar.w, bar.h, Look::PLAIN);
+            for it in &items {
+                let look = if it.active { Look::BOLD_REVERSE } else { Look::PLAIN };
+                s.text(it.x, it.y, &it.text, look, it.w);
+            }
+        } else {
+            let bar_bg = th.chrome.bar_bg;
+            let bar_fg = th.chrome.bar_fg;
+            s.fill_color(bar.x, bar.y, bar.w, bar.h, bar_bg);
+            for it in &items {
+                let tab = match it.kind {
+                    ItemKind::Title(i) | ItemKind::Close(i) => Some(i),
+                    ItemKind::New => None,
+                };
+                let c = match tab {
+                    Some(i) => th.tab_colors(i, it.active),
+                    None => theme::TabColors { fill: None, fg: bar_fg },
+                };
+                // A window draws the fill as a shape; a terminal paints the cells.
+                let cell_bg = if gfx || c.fill.is_none() { bar_bg } else { c.fill };
+                s.text_colored(it.x, it.y, &it.text, c.fg.or(bar_fg), cell_bg, it.active, it.w);
+                if !gfx {
+                    continue;
+                }
+                match it.kind {
+                    ItemKind::Title(_) => {
+                        // The bubble holds the title and the close button after it.
+                        if let Some(fill) = c.fill {
+                            let w = it.w as f32 + 1.0;
+                            let mut sh = tab_shape(th, pos, it.x as f32, it.y as f32, w, it.active);
+                            sh.fill = Some(fill);
+                            sh.shadow = th.tab.shadow && it.active;
+                            s.shapes.push(sh);
+                        }
+                    }
+                    ItemKind::New if th.tab.round_buttons => {
+                        let fill = match (bar_fg, bar_bg) {
+                            (Some(f), Some(b)) => Some(theme::mix(f, b, 0.14)),
+                            _ => None,
+                        };
+                        if let Some(fill) = fill {
+                            let mut sh = tab_shape(th, pos, it.x as f32, it.y as f32, it.w as f32, false);
+                            sh.fill = Some(fill);
+                            sh.radii = [theme_full(); 4];
+                            s.shapes.push(sh);
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
         // The separator between a sidebar and the page.
+        let sep = |s: &mut Screen, x: usize| {
+            for y in bar.y..bar.y + bar.h {
+                s.set(
+                    x,
+                    y,
+                    Cell {
+                        ch: '│',
+                        fg: th.chrome.bar_fg,
+                        bg: th.chrome.bar_bg,
+                        ..Cell::default()
+                    },
+                );
+            }
+        };
         match pos {
-            BarPos::Left => {
-                for y in bar.y..bar.y + bar.h {
-                    s.set(
-                        bar.x + bar.w - 1,
-                        y,
-                        Cell {
-                            ch: '│',
-                            ..Cell::default()
-                        },
-                    );
-                }
-            }
-            BarPos::Right => {
-                for y in bar.y..bar.y + bar.h {
-                    s.set(
-                        bar.x,
-                        y,
-                        Cell {
-                            ch: '│',
-                            ..Cell::default()
-                        },
-                    );
-                }
-            }
+            BarPos::Left => sep(s, bar.x + bar.w - 1),
+            BarPos::Right => sep(s, bar.x),
             _ => {}
         }
     }
@@ -1031,13 +1162,34 @@ impl Browser {
         let v = &self.tabs[self.active].viewer;
         let hl = v.highlight();
         let editing = v.editing().is_some();
+        let gfx = self.shapes_on();
+        if gfx {
+            // Shapes follow their element as the page scrolls and are cut to the page's area.
+            let clip = (area.y as f32, (area.y + area.h) as f32);
+            let dy = area.y as f32 - v.top as f32;
+            let under = v.cursor.current(&v.page).and_then(|i| i.focus);
+            for d in &v.page.decos {
+                if d.row + d.rows <= v.top || d.row >= v.top + area.h {
+                    continue;
+                }
+                let sh = Shape::from_deco(d, area.x as f32, dy, clip);
+                // The control under the cursor gets a ring instead of reverse video.
+                let ring = under.is_some() && d.focus == under && d.kind != engine::DecoKind::Box;
+                let ringed = ring.then(|| sh.ringed(self.theme.accent));
+                s.shapes.push(sh);
+                s.shapes.extend(ringed);
+            }
+        }
         for y in 0..area.h {
             let idx = v.top + y;
             let Some(row) = v.page.rows.get(idx) else {
                 break;
             };
             let mut x = 0usize;
-            for (span, reversed) in row_pieces(row, idx, hl.as_ref(), editing) {
+            // A control is marked by its ring, not by reverse video (the caret still is).
+            let ringed = gfx && !editing && row.info.as_ref().is_some_and(|i| i.focus.is_some());
+            let hl_row = if ringed { None } else { hl.as_ref() };
+            for (span, reversed) in row_pieces(row, idx, hl_row, editing) {
                 let w = span.scale.max(1) as usize;
                 for (k, ch) in span.text.chars().enumerate() {
                     let cx = x + k * w;

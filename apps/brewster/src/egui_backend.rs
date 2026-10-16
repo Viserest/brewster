@@ -27,6 +27,8 @@ use engine::Rgb;
 use profile::Paths;
 
 const FONT_SIZE: f32 = 15.0;
+/// Line height of themes that draw shapes, as a multiple of the font's own.
+const LINE_SPACING: f32 = 1.45;
 /// The grid the first frame is laid out in, before the window's real size is known.
 const FIRST_GRID: (usize, usize) = (100, 35);
 
@@ -34,6 +36,7 @@ pub fn run(opts: Options) -> Result<(), String> {
     let caps = Capabilities {
         windows: true,
         scaling: true,
+        shapes: true,
     };
     let (host, host_warning) = crate::wasm_host();
     let (browser, mut warnings) = launch::open_with_host(
@@ -93,7 +96,10 @@ impl GuiApp {
             let g = f.layout_no_wrap("M".repeat(N), self.font.clone(), Color32::WHITE);
             (g.size().x / N as f32, f.row_height(&self.font))
         });
-        Metrics::measured(adv, line_h, ctx.pixels_per_point())
+        // Themes with shapes want taller lines, so a pill around one line of text has room
+        // to breathe; the `tui` theme keeps the tight terminal grid.
+        let spacing = if self.browser.theme().graphical { LINE_SPACING } else { 1.0 };
+        Metrics::spaced(adv, line_h, spacing, ctx.pixels_per_point())
     }
 
     fn frame(&mut self, ctx: &egui::Context, ui: &egui::Ui, rect: Rect) {
@@ -227,8 +233,10 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The window behind the grid has the theme's page color.
+        let bg = self.browser.theme().page_bg.unwrap_or(grid::THEME_BG);
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(color(grid::THEME_BG)))
+            .frame(egui::Frame::none().fill(color(bg)))
             .show(ctx, |ui| {
                 let rect = ui.available_rect_before_wrap();
                 self.frame(ctx, ui, rect);
@@ -296,7 +304,12 @@ fn paint(painter: &egui::Painter, screen: &Screen, origin: Pos2, m: Metrics, fon
         }
     }
 
-    // 2. Glyphs and underlines, each in its own cell. A scaled glyph is drawn at a larger
+    // 2. Shapes (rounded fills, borders, rings), over the backgrounds and under the glyphs.
+    for sh in &screen.shapes {
+        paint_shape(painter, sh, origin, m);
+    }
+
+    // 3. Glyphs and underlines, each in its own cell. A scaled glyph is drawn at a larger
     //    font size from its first cell and overlaps the cells it covers.
     for y in 0..screen.rows {
         let top = grid::y_of(origin.y, y, m);
@@ -308,7 +321,7 @@ fn paint(painter: &egui::Painter, screen: &Screen, origin: Pos2, m: Metrics, fon
             let scale = c.scale.max(1) as f32;
             let (fg, _) = colors(c);
             let left = grid::x_of(origin.x, x, m);
-            let pos = Pos2::new(left, top);
+            let pos = Pos2::new(left, top + m.text_dy * scale);
             if c.ch != ' ' {
                 let f = if c.scale > 1 {
                     FontId::monospace(FONT_SIZE * scale)
@@ -319,7 +332,7 @@ fn paint(painter: &egui::Painter, screen: &Screen, origin: Pos2, m: Metrics, fon
                 if c.bold {
                     // The default monospace font has no bold face: strike it a pixel apart.
                     painter.text(
-                        Pos2::new(left + m.px() * scale, top),
+                        Pos2::new(left + m.px() * scale, top + m.text_dy * scale),
                         Align2::LEFT_TOP,
                         c.ch,
                         f,
@@ -329,13 +342,83 @@ fn paint(painter: &egui::Painter, screen: &Screen, origin: Pos2, m: Metrics, fon
             }
             if c.underline {
                 let thick = m.px() * scale;
-                let y_line = grid::snap(top + scale * m.cell_h - 2.0 * thick, m.ppp);
+                let y_line = grid::snap(
+                    top + m.text_dy * scale + (scale * (m.cell_h - 2.0 * m.text_dy)) - 2.0 * thick,
+                    m.ppp,
+                );
                 let r = Rect::from_min_max(
                     Pos2::new(left, y_line),
                     Pos2::new(left + scale * m.cell_w, y_line + thick),
                 );
                 painter.rect_filled(r, 0.0, color(fg));
             }
+        }
+    }
+}
+
+fn alpha(c: Rgb, a: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.0, c.1, c.2, (a.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
+fn rounding(r: [f32; 4]) -> egui::Rounding {
+    // The order of `fit_radii`: top left, top right, bottom right, bottom left.
+    egui::Rounding { nw: r[0], ne: r[1], se: r[2], sw: r[3] }
+}
+
+/// One shape: a shadow, a fill, then the border (faded where the shape asks) or a ring.
+/// Where the lengths and curves come from is `browser::geometry`.
+fn paint_shape(painter: &egui::Painter, sh: &browser::Shape, origin: Pos2, m: Metrics) {
+    use browser::geometry as geo;
+    let Some(b) = geo::bounds(sh, origin.x, origin.y, m.cell_w, m.cell_h) else {
+        return;
+    };
+    let rect = |b: geo::Pts| Rect::from_min_max(Pos2::new(b.x0, b.y0), Pos2::new(b.x1, b.y1));
+    let radii = geo::fit_radii(sh.radii, b.w(), b.h());
+
+    if sh.shadow {
+        for (down, grow, a) in geo::shadow_layers() {
+            let mut sb = b;
+            sb.y0 += down;
+            sb.y1 += down;
+            sb.x0 -= grow;
+            sb.x1 += grow;
+            sb.y1 += grow;
+            let r = radii.map(|v| v + grow);
+            painter.rect_filled(rect(sb), rounding(geo::fit_radii(r, sb.w(), sb.h())), alpha(Rgb(0, 0, 0), a));
+        }
+    }
+    if let Some(fill) = sh.fill {
+        painter.rect_filled(rect(b), rounding(radii), color(fill));
+    }
+    let Some(stroke) = sh.stroke else { return };
+    if sh.ring {
+        let (rb, rr) = geo::ring(b, radii, 2.0);
+        painter.rect_stroke(rect(rb), rounding(rr), egui::Stroke::new(2.0, color(stroke)));
+        return;
+    }
+    let width = 1.5;
+    if sh.fade == engine::Fade::None && sh.sides == [true; 4] {
+        painter.rect_stroke(rect(b), rounding(radii), egui::Stroke::new(width, color(stroke)));
+        return;
+    }
+    // A fading or partial border: the outline in short segments, each with its own alpha.
+    let pts = geo::outline(b, radii, 6);
+    let n = pts.len();
+    for i in 0..n {
+        let (p, q) = (pts[i], pts[(i + 1) % n]);
+        let (mx, my) = ((p.0 + q.0) / 2.0, (p.1 + q.1) / 2.0);
+        // Which side this segment is on: the nearest edge of the box.
+        let d = [my - b.y0, b.x1 - mx, b.y1 - my, mx - b.x0];
+        let side = (0..4).min_by(|&a, &c| d[a].total_cmp(&d[c])).unwrap_or(0);
+        if !sh.sides[side] {
+            continue;
+        }
+        let a = geo::fade_alpha(sh.fade, b, mx, my);
+        if a > 0.01 {
+            painter.line_segment(
+                [Pos2::new(p.0, p.1), Pos2::new(q.0, q.1)],
+                egui::Stroke::new(width, alpha(stroke, a)),
+            );
         }
     }
 }

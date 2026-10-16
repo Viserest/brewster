@@ -353,6 +353,7 @@ fn lay_scaled(roots: &[Element], width: usize) -> Page {
         LayoutOptions {
             viewport_rows: None,
             scale_headers: true,
+            ..LayoutOptions::default()
         },
     )
     .unwrap()
@@ -423,6 +424,7 @@ fn lay_view(roots: &[Element], width: usize, rows: usize) -> Page {
         LayoutOptions {
             viewport_rows: Some(rows),
             scale_headers: false,
+            ..LayoutOptions::default()
         },
     )
     .unwrap()
@@ -617,4 +619,173 @@ fn rows_are_exactly_as_wide_as_requested() {
         33,
     );
     assert!(page.rows.iter().all(|r| r.width() == 33));
+}
+
+
+// ── graphical: shapes, controls, rounded corners ────────────────────
+
+fn controls() -> Controls {
+    let c = |fill: Rgb| ControlStyle {
+        fg: Some(Rgb(1, 2, 3)),
+        fill: Some(fill),
+        stroke: None,
+        radius: 8.0,
+        fade: Fade::None,
+    };
+    Controls {
+        button: c(Rgb(10, 10, 10)),
+        link: c(Rgb(20, 20, 20)),
+        input: ControlStyle { stroke: Some(Rgb(9, 9, 9)), ..c(Rgb(30, 30, 30)) },
+        placeholder: Rgb(7, 7, 7),
+    }
+}
+
+fn gfx(roots: &[Element], width: usize) -> Page {
+    layout_all_with(
+        roots,
+        width,
+        &Form::default(),
+        LayoutOptions { graphical: Some(controls()), ..LayoutOptions::default() },
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_button_in_a_window_is_a_padded_shape_without_brackets() {
+    let b = el("button", &[], &["Go"], vec![]);
+    let page = gfx(&[b], 20);
+    assert_eq!(texts(&page.rows), vec![" Go ".to_string() + &" ".repeat(16)]);
+    assert_eq!(page.decos.len(), 1);
+    let d = &page.decos[0];
+    assert_eq!((d.col, d.row, d.cols, d.rows), (0, 0, 4, 1));
+    assert_eq!(d.fill, Some(Rgb(10, 10, 10)));
+    assert_eq!(d.kind, DecoKind::Button);
+    assert_eq!(d.radius, 8.0);
+    assert_eq!(d.focus, Some(0));
+    // The text is the label, in the look's color, and clicks still find it.
+    let span = page.rows[0].spans.iter().find(|s| s.text == "Go").unwrap();
+    assert_eq!(span.fg, Some(Rgb(1, 2, 3)));
+    assert_eq!(page.rows[0].info.as_ref().unwrap().cols, (1, 3));
+}
+
+#[test]
+fn links_and_buttons_get_the_same_shape_with_their_own_fill() {
+    let l = el("link", &[], &["/x", "home"], vec![]);
+    let b = el("button", &[], &["home"], vec![]);
+    let page = gfx(&[l, b], 20);
+    assert_eq!(page.decos.len(), 2);
+    assert_eq!((page.decos[0].cols, page.decos[0].rows), (page.decos[1].cols, page.decos[1].rows));
+    assert_eq!(page.decos[0].kind, DecoKind::Link);
+    assert_eq!(page.decos[1].row, 1);
+    assert_ne!(page.decos[0].fill, page.decos[1].fill);
+    // Links are not underlined in a window: the shape says it is one.
+    assert!(page.rows[0].spans.iter().all(|s| !s.underline));
+}
+
+#[test]
+fn an_input_shows_its_name_until_it_has_a_value() {
+    let i = el("input", &[], &["email", "", "text"], vec![]);
+    let page = gfx(&[i.clone()], 30);
+    assert_eq!(page.inputs[0].prefix, 0);
+    let row = &page.rows[0];
+    assert!(texts(&page.rows)[0].contains("email"));
+    let name = row.spans.iter().find(|s| s.text == "email").unwrap();
+    assert_eq!(name.fg, Some(Rgb(7, 7, 7)));
+    assert_eq!(page.decos[0].kind, DecoKind::Input);
+    assert_eq!(page.decos[0].stroke, Some(Rgb(9, 9, 9)));
+    assert_eq!(page.decos[0].cols, 18); // sixteen cells and a cell of padding each side
+
+    let mut form = Form::default();
+    form.values.insert(0, "a@b.c".to_string());
+    let page = layout_all_with(
+        &[i],
+        30,
+        &form,
+        LayoutOptions { graphical: Some(controls()), ..LayoutOptions::default() },
+    )
+    .unwrap();
+    assert!(texts(&page.rows)[0].contains("a@b.c"));
+    assert!(!texts(&page.rows)[0].contains("email"));
+}
+
+#[test]
+fn a_protected_input_shows_bullets_and_keeps_the_caret_cell() {
+    let i = el("input", &[("protected", &["1"])], &["pw", "abc", "password"], vec![]);
+    let mut form = Form::default();
+    form.editing = Some((0, 3));
+    let page = layout_all_with(
+        &[i],
+        30,
+        &form,
+        LayoutOptions { graphical: Some(controls()), ..LayoutOptions::default() },
+    )
+    .unwrap();
+    assert!(texts(&page.rows)[0].contains("\u{2022}\u{2022}\u{2022} "));
+    assert_eq!(page.inputs[0].segs, vec![(0, 4)]);
+    assert_eq!(page.rows[0].info.as_ref().unwrap().caret, Some(4));
+}
+
+#[test]
+fn a_border_in_a_window_is_a_shape_through_blank_gutters() {
+    let b = el("box", &[("border", &["1"]), ("border-color", &["red"]), ("border-radius", &["md"]), ("border-fading", &["bottom"])], &[], vec![el("p", &[], &["hi"], vec![])]);
+    let page = gfx(&[b], 10);
+    assert_eq!(texts(&page.rows)[0].trim(), ""); // the top gutter row is blank
+    assert!(texts(&page.rows).iter().all(|t| !t.contains('\u{2502}') && !t.contains('\u{2500}')));
+    assert_eq!(page.rows.len(), 3);
+    let d = &page.decos[0];
+    assert_eq!((d.cols, d.rows), (4, 3));
+    assert_eq!(d.stroke, Some(RED));
+    assert_eq!(d.fade, Fade::Bottom);
+    assert_eq!(d.radius, 8.0);
+    assert_eq!(d.sides, [true; 4]);
+    assert_eq!(d.fill, None);
+}
+
+#[test]
+fn a_rounded_box_with_a_background_fills_with_a_shape_not_cells() {
+    let b = el("box", &[("bcolor", &["blue"]), ("border-radius", &["lg"]), ("pad", &["1"])], &[], vec![el("p", &[], &["hi"], vec![])]);
+    let page = gfx(&[b], 10);
+    assert_eq!(page.decos[0].fill, Some(BLUE));
+    // The corner cells keep the surrounding background; the text sits on the box's.
+    assert!(page.rows[0].spans.iter().all(|s| s.bg.is_none()));
+    assert!(page.rows[1].spans.iter().any(|s| s.text == "hi" && s.bg == Some(BLUE)));
+}
+
+#[test]
+fn shapes_follow_their_element_down_and_across() {
+    let inner = el("button", &[], &["ok"], vec![]);
+    let outer = el("box", &[("margin", &["1"]), ("pad", &["1"]), ("border", &["1"])], &[], vec![el("p", &[], &["x"], vec![]), inner]);
+    let page = gfx(&[el("p", &[], &["top"], vec![]), outer], 20);
+    let button = page.decos.iter().find(|d| d.kind == DecoKind::Button).unwrap();
+    let row = page.rows.iter().position(|r| row_text(r).contains("ok")).unwrap();
+    assert_eq!(button.row, row);
+    let col = row_text(&page.rows[row]).find("ok").unwrap();
+    assert_eq!(button.col + 1, col);
+}
+
+#[test]
+fn a_terminal_rounds_corners_with_characters() {
+    let b = el("box", &[("border", &["1"]), ("border-radius", &["sm"])], &[], vec![el("p", &[], &["hi"], vec![])]);
+    let rows = lay(&[b], 10).rows;
+    let t = texts(&rows);
+    assert_eq!(t[0].trim_end(), "\u{256D}\u{2500}\u{2500}\u{256E}");
+    assert_eq!(t[2].trim_end(), "\u{2570}\u{2500}\u{2500}\u{256F}");
+    let plain = el("box", &[("border", &["1"])], &[], vec![el("p", &[], &["hi"], vec![])]);
+    assert_eq!(texts(&lay(&[plain], 10).rows)[0].trim_end(), "\u{250C}\u{2500}\u{2500}\u{2510}");
+}
+
+#[test]
+fn no_shapes_without_a_window() {
+    let b = el("button", &[], &["Go"], vec![]);
+    let page = lay(&[b], 20);
+    assert!(page.decos.is_empty());
+    assert!(texts(&page.rows)[0].starts_with("[ Go ]"));
+}
+
+#[test]
+fn bad_radius_and_fading_are_reported() {
+    let b = el("box", &[("border-radius", &["round"])], &[], vec![]);
+    assert!(layout_all(&[b], 10, &Form::default()).unwrap_err().contains("border-radius"));
+    let b = el("box", &[("border-fading", &["diagonal"])], &[], vec![]);
+    assert!(layout_all(&[b], 10, &Form::default()).unwrap_err().contains("border-fading"));
 }

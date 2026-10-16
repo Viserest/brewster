@@ -105,6 +105,21 @@ impl Runner for WasmtimeRunner {
         let problems = instance
             .get_typed_func::<(), u64>(&mut store, "cre_problems")
             .map_err(|_| export("cre_problems"))?;
+        let alloc = instance
+            .get_typed_func::<u32, u32>(&mut store, "cre_alloc")
+            .map_err(|_| export("cre_alloc"))?;
+        let set_url = instance
+            .get_typed_func::<u32, ()>(&mut store, "cre_set_url")
+            .map_err(|_| export("cre_set_url"))?;
+        let input = instance
+            .get_typed_func::<(u32, u32), ()>(&mut store, "cre_input")
+            .map_err(|_| export("cre_input"))?;
+        let net_take = instance
+            .get_typed_func::<(), u64>(&mut store, "cre_net_take")
+            .map_err(|_| export("cre_net_take"))?;
+        let net_done = instance
+            .get_typed_func::<(u32, u32), ()>(&mut store, "cre_net_done")
+            .map_err(|_| export("cre_net_done"))?;
 
         let guest = WasmGuest::new(Running {
             store,
@@ -114,6 +129,11 @@ impl Runner for WasmtimeRunner {
             page,
             event,
             problems,
+            alloc,
+            set_url,
+            input,
+            net_take,
+            net_done,
         })?;
         Ok(Box::new(guest))
     }
@@ -123,7 +143,7 @@ struct State {
     limits: StoreLimits,
 }
 
-/// One module instance: its store, its memory and the four exports.
+/// One module instance: its store, its memory and its exports.
 struct Running {
     store: Store<State>,
     memory: Memory,
@@ -132,6 +152,11 @@ struct Running {
     page: TypedFunc<(), u64>,
     event: TypedFunc<u32, u32>,
     problems: TypedFunc<(), u64>,
+    alloc: TypedFunc<u32, u32>,
+    set_url: TypedFunc<u32, ()>,
+    input: TypedFunc<(u32, u32), ()>,
+    net_take: TypedFunc<(), u64>,
+    net_done: TypedFunc<(u32, u32), ()>,
 }
 
 impl Running {
@@ -169,28 +194,73 @@ impl Instance for Running {
             .map_err(|_| format!("the page pointed outside its memory ({ptr}+{len})"))?;
         Ok(buf)
     }
+
+    fn load(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let len = u32::try_from(bytes.len()).map_err(|_| "message too large".to_string())?;
+        self.refuel()?;
+        let ptr = self.alloc.call(&mut self.store, len).map_err(err)?;
+        self.memory
+            .write(&mut self.store, ptr as usize, bytes)
+            .map_err(|_| format!("the page's buffer is outside its memory ({ptr}+{len})"))
+    }
+
+    fn set_url(&mut self, len: u32) -> Result<(), String> {
+        self.refuel()?;
+        self.set_url.call(&mut self.store, len).map_err(err)
+    }
+
+    fn input(&mut self, id: u32, len: u32) -> Result<(), String> {
+        self.refuel()?;
+        self.input.call(&mut self.store, (id, len)).map_err(err)
+    }
+
+    fn net_take(&mut self) -> Result<u64, String> {
+        self.refuel()?;
+        self.net_take.call(&mut self.store, ()).map_err(err)
+    }
+
+    fn net_done(&mut self, id: u32, len: u32) -> Result<(), String> {
+        self.refuel()?;
+        self.net_done.call(&mut self.store, (id, len)).map_err(err)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // A module written by hand in the text format: one exported memory and the four
+    // A module written by hand in the text format: one exported memory and the
     // exports, with a page that is empty. `wat` text needs wasmtime's default `wat`
     // feature, which is on.
     const EMPTY_PAGE: &str = r#"
         (module
           (memory (export "memory") 1)
-          (func (export "cre_abi") (result i32) i32.const 1)
+          (func (export "cre_abi") (result i32) i32.const 2)
           (func (export "cre_page") (result i64) i64.const 0)
           (func (export "cre_event") (param i32) (result i32) i32.const 0)
-          (func (export "cre_problems") (result i64) i64.const 0))
+          (func (export "cre_problems") (result i64) i64.const 0)
+          (func (export "cre_alloc") (param i32) (result i32) i32.const 1024)
+          (func (export "cre_set_url") (param i32))
+          (func (export "cre_input") (param i32 i32))
+          (func (export "cre_net_take") (result i64) i64.const 0)
+          (func (export "cre_net_done") (param i32 i32))
+          )
     "#;
 
     #[test]
     fn a_module_with_the_exports_starts() {
         let r = WasmtimeRunner::new().unwrap();
         assert!(r.instantiate(EMPTY_PAGE.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn the_address_and_an_input_reach_the_module() {
+        let r = WasmtimeRunner::new().unwrap();
+        let mut g = r.instantiate(EMPTY_PAGE.as_bytes()).unwrap();
+        // The empty page ignores both, but the buffer is allocated, written and passed on.
+        g.set_url(&cre::Url::parse("http://a.b/c")).unwrap();
+        g.set_input(3, "typed").unwrap();
+        assert!(g.net_take().unwrap().is_empty());
     }
 
     #[test]
@@ -217,7 +287,13 @@ mod tests {
               (func (export "cre_abi") (result i32) (loop (br 0)) i32.const 1)
               (func (export "cre_page") (result i64) i64.const 0)
               (func (export "cre_event") (param i32) (result i32) i32.const 0)
-              (func (export "cre_problems") (result i64) i64.const 0))
+              (func (export "cre_problems") (result i64) i64.const 0)
+              (func (export "cre_alloc") (param i32) (result i32) i32.const 1024)
+              (func (export "cre_set_url") (param i32))
+              (func (export "cre_input") (param i32 i32))
+              (func (export "cre_net_take") (result i64) i64.const 0)
+              (func (export "cre_net_done") (param i32 i32))
+              )
         "#;
         // `WasmGuest::new` calls `cre_abi`, which never returns: it must trap, not hang.
         assert!(r.instantiate(wat.as_bytes()).is_err());

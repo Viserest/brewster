@@ -7,6 +7,7 @@ use profile::Profile;
 use settings::Value;
 
 use cre::*;
+use engine::Url;
 
 /// Serves a module for every page name; the runner of [`host`] knows what each one builds.
 struct Mock(HashMap<String, Vec<u8>>);
@@ -115,8 +116,12 @@ fn browser_with(profile: Profile, urls: &[&str]) -> Browser {
     b
 }
 
+/// A browser with the terminal look: the tests below check reverse video and plain cells.
+/// The colored themes have their own tests (`mod themes`).
 fn mk(urls: &[&str]) -> Browser {
-    browser_with(Profile::new("test").unwrap(), urls)
+    let mut p = Profile::new("test").unwrap();
+    p.settings.set("general.theme", Value::str("tui")).unwrap();
+    browser_with(p, urls)
 }
 
 fn key(k: Key) -> KeyPress {
@@ -384,6 +389,7 @@ fn shift_enter_and_w_open_a_window_when_there_are_windows() {
     b.set_capabilities(Capabilities {
         windows: true,
         scaling: false,
+        ..Capabilities::default()
     });
     b.on_key(with(Key::Enter, false, false, true));
     assert_eq!(
@@ -455,6 +461,7 @@ fn clicking_links_with_the_mouse() {
     b.set_capabilities(Capabilities {
         windows: true,
         scaling: false,
+        ..Capabilities::default()
     });
     let y = find(&b);
     b.on_mouse(click(
@@ -1150,7 +1157,11 @@ fn size_max_fills_the_window() {
     let mut m = files();
     m.page("file:///fill.rs", "fill");
     let mut b = Browser::with_host(
-        Profile::new("t").unwrap(),
+        {
+            let mut p = Profile::new("t").unwrap();
+            p.settings.set("general.theme", Value::str("tui")).unwrap();
+            p
+        },
         Registry::in_memory(),
         Rc::new(m),
         host(),
@@ -1189,6 +1200,7 @@ fn headers_are_scaled_only_when_the_frontend_can_draw_them() {
     b.set_capabilities(Capabilities {
         windows: false,
         scaling: true,
+        ..Capabilities::default()
     });
     let s = b.screen();
     let big = s.get(0, 1).unwrap();
@@ -1233,4 +1245,129 @@ fn the_demo_example_button_runs_its_function() {
     }
     b.on_key(key(Key::Enter));
     assert!(contains(&b, "Hello, friend!"), "{:?}", text(&b));
+}
+
+
+mod themes {
+    use super::*;
+    use crate::Shape;
+    use engine::Rgb;
+
+    fn themed(name: &str, shapes: bool) -> Browser {
+        let mut p = Profile::new("test").unwrap();
+        p.settings.set("general.theme", Value::str(name)).unwrap();
+        let mut b = browser_with(p, &["/a.rs", "/b.rs"]);
+        b.set_capabilities(Capabilities { shapes, ..Capabilities::default() });
+        b
+    }
+
+    #[test]
+    fn the_default_theme_colors_every_cell() {
+        let b = themed("default", false);
+        let s = b.screen();
+        let (bg, fg) = (b.theme().page_bg.unwrap(), b.theme().page_fg.unwrap());
+        assert_eq!((s.bg, s.fg), (Some(bg), Some(fg)));
+        for y in 0..s.rows {
+            for x in 0..s.cols {
+                let c = s.get(x, y).unwrap();
+                assert!(c.bg.is_some() && c.fg.is_some() && !c.reverse, "({x},{y})");
+            }
+        }
+        // A terminal has no shapes, controls stay text, tabs are flat colors.
+        assert!(s.shapes.is_empty());
+        assert!(contains(&b, "[ press ]"));
+        let active = s.get(1, 0).unwrap();
+        let idle = s.get(b.tab_title(0).unwrap().len() + 6, 0).unwrap();
+        assert_ne!(active.bg, idle.bg);
+    }
+
+    #[test]
+    fn the_tui_theme_is_the_plain_terminal_look() {
+        let b = themed("tui", true);
+        let s = b.screen();
+        assert!(s.shapes.is_empty() && s.bg.is_none());
+        assert!(s.get(0, 0).unwrap().bg.is_none());
+        // Even in a window: no shapes, brackets stay.
+        assert!(contains(&b, "[ press ]"));
+    }
+
+    #[test]
+    fn in_a_window_tabs_and_controls_are_shapes() {
+        let b = themed("default", true);
+        let s = b.screen();
+        assert!(s.shapes.len() >= 5, "{}", s.shapes.len());
+        // One bubble per tab on the bar (row 0), the active one on a shadow.
+        let tabs: Vec<&Shape> = s.shapes.iter().filter(|sh| sh.y < 1.0).collect();
+        assert!(tabs.len() >= 2);
+        assert_eq!(tabs.iter().filter(|t| t.shadow).count(), 1);
+        assert!(tabs.iter().all(|t| t.fill.is_some()));
+        assert_ne!(tabs[0].fill, tabs[1].fill, "each tab has its own color");
+        // The page's buttons are shapes and have no brackets.
+        assert!(!contains(&b, "[ press ]"));
+        assert!(contains(&b, "press"));
+        let page: Vec<&Shape> = s.shapes.iter().filter(|sh| sh.y >= 1.0).collect();
+        assert!(!page.is_empty());
+        assert!(page.iter().all(|sh| sh.clip == Some((1.0, 19.0))));
+    }
+
+    #[test]
+    fn the_control_under_the_cursor_gets_a_ring_not_reverse_video() {
+        let b = themed("default", true);
+        let s = b.screen();
+        assert!(s.shapes.iter().any(|sh| sh.ring), "{:?}", s.shapes);
+        let y = row_with(&b, "to b").unwrap();
+        assert!(!(0..60).any(|x| s.get(x, y).unwrap().reverse));
+    }
+
+    #[test]
+    fn the_theme_follows_the_setting_and_controls_follow_the_theme() {
+        let mut b = themed("default", true);
+        assert!(!contains(&b, "[ press ]"));
+        b.profile.settings.set("general.theme", Value::str("tui")).unwrap();
+        b.apply_settings();
+        assert_eq!(b.theme().name, "tui");
+        assert!(contains(&b, "[ press ]"));
+        assert!(b.screen().shapes.is_empty());
+        b.profile.settings.set("general.theme", Value::str("chromium")).unwrap();
+        b.apply_settings();
+        assert_eq!(b.screen().bg, b.theme().page_bg);
+        assert!(!b.screen().shapes.is_empty());
+    }
+
+    #[test]
+    fn a_box_on_top_hides_the_shapes_under_it() {
+        let mut b = themed("default", true);
+        let before = b.screen().shapes.len();
+        assert!(before > 0);
+        b.open_settings();
+        let g = crate::overlay::box_geometry(60, 20);
+        let (x0, y0, x1, y1) = (g.x as f32, g.y as f32, (g.x + g.w) as f32, (g.y + g.h) as f32);
+        let s = b.screen();
+        assert!(s.shapes.len() < before);
+        assert!(
+            s.shapes.iter().all(|sh| sh.x >= x1 || sh.x + sh.w <= x0 || sh.y >= y1 || sh.y + sh.h <= y0),
+            "no shape may touch the box"
+        );
+    }
+
+    #[test]
+    fn chromium_tabs_are_flat_at_the_bottom_and_firefox_ones_round() {
+        let c = themed("chromium", true).screen();
+        let active = c.shapes.iter().find(|s| s.y < 1.0 && s.fill == Some(Rgb(255, 255, 255))).unwrap();
+        assert!(active.radii[0] > 0.0 && active.radii[2] == 0.0);
+        assert!((active.y + active.h - 1.0).abs() < 1e-6, "the active tab reaches the page");
+        let f = themed("firefox", true).screen();
+        let active = f.shapes.iter().find(|s| s.y < 1.0).unwrap();
+        assert!(active.radii.iter().all(|r| *r == 6.0));
+    }
+
+    #[test]
+    fn a_bar_at_the_bottom_turns_the_tabs_over() {
+        let mut b = themed("chromium", true);
+        b.profile.settings.set("tabs.position", Value::str("bottom")).unwrap();
+        b.apply_settings();
+        let s = b.screen();
+        let tab = s.shapes.iter().find(|s| s.y > 10.0 && s.fill == Some(Rgb(255, 255, 255))).unwrap();
+        assert!(tab.radii[0] == 0.0 && tab.radii[3] == 0.0 && tab.radii[1] > 0.0 || tab.radii[2] > 0.0);
+    }
 }

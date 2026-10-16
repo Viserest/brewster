@@ -240,6 +240,34 @@ input!( {attributes}? , Text|Password, "name", "value" )
 - `extends: &template` copies the style of a template element, skips its children, and carries over its `before` / `after` content. `before: bx!(..)` and `after: bx!(..)` add content around the element's own children.
 - `id: "name"` names an element for `root.tree.query("#name")`.
 
+### The page's address, `root()` and the network
+
+`root().url()` is the address of the tab (`Url { method, href, scheme, authority, path, query, fragment }`, with `query_param(name)`). The browser keeps it in step with the tab: following a link to another `#fragment` of the same page does not reload it, it just tells the page. `cre::root()` returns the page's `Root` anywhere (a handler also gets it as its second argument). Do not name a closure parameter `root`: it hides the function.
+
+`root().net().post("/login", body)` (also `get`, `put`, `delete`, `patch`, `head`) returns a future of `Result<Response, NetworkError>`, like `fetch`. Pages run a tiny single-threaded executor: `cre::spawn(async { .. })` starts one, button handlers may `spawn`. A request is queued, the browser sends it (same origin only, `http`; an answer of any status is a `Response`, a refusal is `NetworkError::Blocked`) and hands the answer back.
+
+`cre::router!` picks a handler by method and path; the method may be written in any case:
+
+```rust
+cre::router!([
+    get "/": index,
+    get "/hello/:name": hello,     // :name and a final *rest are parameters
+    post "/login": login,
+]);
+fn hello(req: &cre::Request) -> Element { p!(format!("hi {}", req.param("name").unwrap_or(""))) }
+fn index() -> Element { h1!("home") }   // a handler may take the request, or nothing
+```
+
+`cre::form!` builds a login form from a struct:
+
+```rust
+cre::form!(struct Login { username: String => Text, password: String => Password }, post "/login");
+// Login::element() -> a bx! with an input per field, a Submit button and a status line
+// Login::read(&root) -> Login (the current inputs)      Login::call(&self) -> the request future
+```
+
+`Submit` sends `Login::call` and writes the status or the failure into the status line. A wrong method or input type does not compile.
+
 ### Tree
 
 A handler gets `root: &Root` (passed in, never global). `root.tree` has `query(selector) -> Option<Element>` (selectors `*`, `tag`, `#id`, `tag#id`, descendants only), `query_all`, `find(id)` and `append(&element)`. An `Element` is a cheap shared handle: `set_text`, `text`, `set`, `style`, `push`, `extend`, `children`, `parent`, `remove`, `query`, `query_all`, `deep_clone`. Mistakes (children on a leaf and the like) are recorded and shown as diagnostics, never crashes.
@@ -291,6 +319,11 @@ Logic lives in `crates/*`; UI lives in `apps/*`. The crates use only `std` (exce
 The text language and its `lexer`, `parser` and `script` crates are gone: pages are Rust, so `rustc` is the parser and the type checker, and the `cre` crate builds the live tree (`tree`) with the template rules (`extends`, `before`, `after`). Layout reads a snapshot of it.
 
 ## Known limits
+
+- Requests are sent one after another on the browser's thread, so a slow server freezes the window; the method is always checked, the origin must equal the page's.
+- The wasm interface is version 2 (`cre_alloc`, `cre_set_url`, `cre_input`, `cre_net_take`, `cre_net_done` were added); a module built with an older SDK is refused with a clear message.
+- `cre::root()` is a thread-local accessor: it works inside the page and its handlers, which is where pages run.
+- Shapes, themes and the GUI restyle (`apps/brewster`, `browser::geometry`) are unit-tested up to the egui calls, which were not compiled here.
 
 - https is not supported (std has no TLS); http and files work.
 - The wasmtime runner (`crates/host-wasmtime`) was written against the wasmtime 49 documentation and type-checked against a stub of its API, but it has not been compiled or run against the real crate in the environment it was written in (no network). Its own tests (`cargo test -p host-wasmtime`) are the first thing to run. The protocol around it (`host::WasmGuest`) is tested with a fake engine.

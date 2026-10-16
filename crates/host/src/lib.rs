@@ -28,6 +28,40 @@ pub trait Guest {
 
     /// Mistakes the page recorded since the last call (children on a leaf and the like).
     fn problems(&mut self) -> Vec<String>;
+
+    /// The address of the tab the page runs in. Called before the first `tree`, and again
+    /// whenever the tab's address changes.
+    fn set_url(&mut self, _url: &cre::Url) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The user edited the input with this id (a guest-local id): the page sees the value.
+    fn set_input(&mut self, _id: usize, _value: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The network requests the page has asked for since the last call.
+    fn net_take(&mut self) -> Result<Vec<cre::NetRequest>, String> {
+        Ok(Vec::new())
+    }
+
+    /// The answer to a request from [`Guest::net_take`]. The page's waiting futures run
+    /// before this returns.
+    fn net_done(&mut self, _id: u32, _result: cre::NetResult) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// Sends the requests pages ask for. It decides what is allowed: a refusal is
+/// `Err(NetworkError::Blocked(..))`, which the page sees as a value. Requests are carried
+/// out one after the other on the calling thread.
+pub trait NetClient {
+    fn fetch(&self, req: &cre::NetRequest) -> cre::NetResult;
+}
+
+/// The address a guest is told about.
+pub fn page_url(url: &location::Url) -> cre::Url {
+    cre::Url::parse(&url.to_string())
 }
 
 /// Starts modules.

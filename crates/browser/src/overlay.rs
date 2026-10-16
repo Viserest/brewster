@@ -513,6 +513,8 @@ fn frame(s: &mut Screen, x: usize, y: usize, w: usize, h: usize, title: &str) {
     if w < 2 || h < 2 {
         return;
     }
+    // Shapes of the page and the tabs must not show through the box.
+    s.cover(x, y, w, h);
     s.fill(x, y, w, h, Look::PLAIN);
     let put = |s: &mut Screen, cx: usize, cy: usize, ch: char| {
         s.set(

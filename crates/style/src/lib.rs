@@ -193,6 +193,77 @@ pub fn size(style: &StyleMap) -> Result<Size, String> {
     Ok(sz)
 }
 
+/// Where a border is strongest; it fades to nothing on the opposite side. Only graphical
+/// frontends can fade (a terminal draws the border in one color).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Fade {
+    #[default]
+    None,
+    Top,
+    Right,
+    Bottom,
+    Left,
+    /// The whole border, softened.
+    Soft,
+}
+
+pub fn parse_fade(s: &str) -> Result<Fade, String> {
+    match s.trim() {
+        "none" | "0" | "off" => Ok(Fade::None),
+        "top" => Ok(Fade::Top),
+        "right" => Ok(Fade::Right),
+        "bottom" => Ok(Fade::Bottom),
+        "left" => Ok(Fade::Left),
+        "soft" | "all" => Ok(Fade::Soft),
+        o => Err(format!(
+            "unknown border-fading `{}` (use none, top, right, bottom, left or soft)",
+            o
+        )),
+    }
+}
+
+/// `border-fading`, `Fade::None` when absent.
+pub fn border_fading(style: &StyleMap) -> Result<Fade, String> {
+    match style.get("border-fading") {
+        Some(v) => parse_fade(first(v)?),
+        None => Ok(Fade::None),
+    }
+}
+
+/// The radius named by `s`, in points: `none`, `sm`, `md`, `lg`, `xl`, `full` (a pill),
+/// or a number (`12`, `12px`).
+pub fn parse_radius(s: &str) -> Result<f32, String> {
+    let s = s.trim();
+    match s {
+        "none" => return Ok(0.0),
+        "sm" => return Ok(4.0),
+        "md" => return Ok(8.0),
+        "lg" => return Ok(14.0),
+        "xl" => return Ok(22.0),
+        "full" | "pill" => return Ok(FULL_RADIUS),
+        _ => {}
+    }
+    let n = s.strip_suffix("px").unwrap_or(s);
+    match n.parse::<u16>() {
+        Ok(v) if f32::from(v) <= FULL_RADIUS => Ok(f32::from(v)),
+        _ => Err(format!(
+            "unknown border-radius `{}` (use none, sm, md, lg, xl, full or a size in px)",
+            s
+        )),
+    }
+}
+
+/// A radius that always rounds a box off completely.
+pub const FULL_RADIUS: f32 = 999.0;
+
+/// `border-radius` in points; `None` when the style does not say.
+pub fn border_radius(style: &StyleMap) -> Result<Option<f32>, String> {
+    match style.get("border-radius") {
+        Some(v) => parse_radius(first(v)?).map(Some),
+        None => Ok(None),
+    }
+}
+
 pub fn decode(s: &str) -> String {
     s.replace("&copy;", "©")
         .replace("&nbsp;", " ")
@@ -299,5 +370,35 @@ mod tests {
         assert_eq!(spacing(&m, "pad"), Ok([2, 1, 2, 1]));
         m.insert("pad-x".to_string(), vec!["5".to_string()]);
         assert_eq!(spacing(&m, "pad"), Ok([2, 5, 2, 5]));
+    }
+}
+
+#[cfg(test)]
+mod round_tests {
+    use super::*;
+
+    #[test]
+    fn radius_names_and_numbers() {
+        assert_eq!(parse_radius("md"), Ok(8.0));
+        assert_eq!(parse_radius("12px"), Ok(12.0));
+        assert_eq!(parse_radius("full"), Ok(FULL_RADIUS));
+        assert_eq!(parse_radius("0"), Ok(0.0));
+        assert!(parse_radius("-1").is_err());
+        assert!(parse_radius("round").is_err());
+        assert!(parse_radius("5000").is_err());
+    }
+
+    #[test]
+    fn fade_sides() {
+        assert_eq!(parse_fade("bottom"), Ok(Fade::Bottom));
+        assert_eq!(parse_fade("none"), Ok(Fade::None));
+        assert!(parse_fade("diagonal").unwrap_err().contains("diagonal"));
+    }
+
+    #[test]
+    fn absent_means_unset() {
+        let st = StyleMap::new();
+        assert_eq!(border_radius(&st), Ok(None));
+        assert_eq!(border_fading(&st), Ok(Fade::None));
     }
 }

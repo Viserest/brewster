@@ -9,3 +9,6 @@ edition = "2024"
 host = { path = "../host" }
 plugin = { path = "../plugin" }
 wasmtime = "49"
+
+[dev-dependencies]
+cre = { path = "../cre" }

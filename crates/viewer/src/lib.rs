@@ -105,6 +105,8 @@ pub struct Viewer {
     pub fill: bool,
     /// Draw header font sizes (graphical frontends only).
     pub scale_headers: bool,
+    /// How controls look in a window (see `LayoutOptions::graphical`); `None` in a terminal.
+    pub controls: Option<engine::Controls>,
     /// Whether Enter on a link follows it (`Flow::Open`). The browser turns this off and
     /// follows links through its key bindings instead.
     pub enter_follows_links: bool,
@@ -128,7 +130,7 @@ impl Viewer {
         let form = Form::default();
         let opts = LayoutOptions {
             viewport_rows: Some(height.saturating_sub(1).max(1)),
-            scale_headers: false,
+            ..LayoutOptions::default()
         };
         // Layout errors (a bad style value, say) fall back to an empty page with a notice.
         let (page, notice) = match doc.layout(width, &form, opts) {
@@ -141,6 +143,7 @@ impl Viewer {
             doc,
             fill: true,
             scale_headers: false,
+            controls: None,
             enter_follows_links: true,
             form,
             page,
@@ -163,6 +166,15 @@ impl Viewer {
         LayoutOptions {
             viewport_rows: self.fill.then(|| self.view_h()),
             scale_headers: self.scale_headers,
+            graphical: self.controls,
+        }
+    }
+
+    /// Draws controls as shapes (a window) or as text (`None`) and lays the page out again.
+    pub fn set_controls(&mut self, controls: Option<engine::Controls>) {
+        if self.controls != controls {
+            self.controls = controls;
+            self.relayout();
         }
     }
 
@@ -427,6 +439,7 @@ impl Viewer {
         let mut ran = false;
         if self.doc.is_clickable(info.node) {
             ran = true;
+            self.sync_inputs();
             match self.doc.click(info.node) {
                 Ok(_) => {}
                 Err(e) => self.notice = Some(e),
@@ -454,6 +467,23 @@ impl Viewer {
                         Some("nothing to do here (no link, input or onclick)".to_string());
                 }
                 Flow::Continue
+            }
+        }
+    }
+
+    /// The tab moved within the same page (a `#fragment`): the page is told its new
+    /// address and may change in response.
+    pub fn set_address(&mut self, url: engine::Url) -> Result<(), String> {
+        let r = self.doc.set_url(url);
+        self.relayout();
+        r
+    }
+
+    /// Tells the page what was typed, so a handler that reads its form sees it.
+    fn sync_inputs(&mut self) {
+        for (i, value) in &self.form.values {
+            if let Some(input) = self.page.inputs.get(*i) {
+                self.doc.set_input(input.node, value);
             }
         }
     }
@@ -585,7 +615,7 @@ mod tests {
         ])
     }
 
-    fn app(build: impl FnOnce() -> Element, w: usize, h: usize) -> Viewer {
+    fn app(build: impl FnOnce() -> Element + 'static, w: usize, h: usize) -> Viewer {
         let doc = Document::from_page(engine::Url::about("blank"), build);
         Viewer::from_document("test.rs", doc, w, h)
     }

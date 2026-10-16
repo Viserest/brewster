@@ -18,15 +18,30 @@
 
 pub mod abi;
 mod attr;
+mod codec;
 mod element;
+pub mod form;
 mod macros;
+pub mod net;
 mod page;
+pub mod route;
 mod root;
+mod task;
+mod url;
 
-pub use attr::{Attr, Border, Color, Handler, InputType, Pad};
+pub use attr::{Attr, Border, Color, Fade, Handler, InputType, Pad, Radius};
 pub use element::{Element, Tag, take_problems};
-pub use page::LivePage;
-pub use root::{Root, Tree};
+pub use form::FormValue;
+pub use net::{
+    Net, NetRequest, NetResult, NetworkError, Response, ResponseFuture, decode_requests,
+    decode_result, encode_requests, encode_result,
+};
+pub use page::{LivePage, NoRoot, PageFn, WithRoot};
+pub use root::{Root, Tree, root, spawn};
+pub use route::Request;
+pub use url::{Method, Url, decode_component, encode_component};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_runtime;

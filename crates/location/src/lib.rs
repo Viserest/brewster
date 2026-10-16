@@ -253,6 +253,25 @@ impl fmt::Display for Url {
     }
 }
 
+/// A request made on behalf of a page (see `cre::Net`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpRequest {
+    /// `GET`, `POST`, ... in upper case.
+    pub method: String,
+    pub url: Url,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+/// What came back. Any status is a response; only a failure to talk to the server is an
+/// error, as with the `fetch` API.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
 /// Loads the text of a page.
 pub trait Loader {
     fn load(&self, url: &Url) -> Result<String, String>;
@@ -261,6 +280,19 @@ pub trait Loader {
     /// text can leave the default.
     fn load_bytes(&self, url: &Url) -> Result<Vec<u8>, String> {
         self.load(url).map(String::into_bytes)
+    }
+
+    /// A request with any method. The default knows only `GET`, answered with the bytes
+    /// behind the URL; loaders that speak HTTP override it.
+    fn fetch(&self, req: &HttpRequest) -> Result<HttpResponse, String> {
+        if req.method != "GET" {
+            return Err(format!("this loader cannot send {} requests", req.method));
+        }
+        Ok(HttpResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: self.load_bytes(&req.url)?,
+        })
     }
 }
 
@@ -300,10 +332,78 @@ impl Loader for DefaultLoader {
             s => Err(format!("cannot load `{}` URLs", s)),
         }
     }
+
+    fn fetch(&self, req: &HttpRequest) -> Result<HttpResponse, String> {
+        match req.url.scheme() {
+            "http" => self.exchange(&req.method, &req.url, &req.headers, &req.body, 0),
+            "https" => Err(
+                "https is not supported yet (std has no TLS); use http:// or a file".to_string(),
+            ),
+            _ if req.method == "GET" => Ok(HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: self.load_bytes(&req.url)?,
+            }),
+            s => Err(format!("cannot send {} requests to `{}` URLs", req.method, s)),
+        }
+    }
 }
 
 impl DefaultLoader {
+    /// A `GET` whose body is the page: anything but 2xx is an error.
     fn http_get(&self, url: &Url, redirects: usize) -> Result<Vec<u8>, String> {
+        let r = self.exchange("GET", url, &[], &[], redirects)?;
+        if !(200..300).contains(&r.status) {
+            return Err(format!("HTTP {} from {}", r.status, url));
+        }
+        if r.body.len() > MAX_BODY {
+            return Err("page is larger than 8 MiB".to_string());
+        }
+        Ok(r.body)
+    }
+
+    /// One HTTP exchange, following redirects (`301`..`303` become a `GET`; `307` and
+    /// `308` repeat the request). Any status is returned as a response.
+    fn exchange(
+        &self,
+        method: &str,
+        url: &Url,
+        headers: &[(String, String)],
+        body: &[u8],
+        redirects: usize,
+    ) -> Result<HttpResponse, String> {
+        // The request is checked before anything is connected.
+        let mut target = url.path().to_string();
+        if let Some(q) = url.query() {
+            target.push('?');
+            target.push_str(q);
+        }
+        if body.len() > MAX_BODY {
+            return Err("request body is larger than 8 MiB".to_string());
+        }
+        let mut head = format!(
+            "{} {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: brewster\r\nConnection: close\r\n",
+            method,
+            target,
+            url.authority()
+        );
+        let has = |name: &str| headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
+        if !has("accept") {
+            head.push_str("Accept: */*\r\n");
+        }
+        for (k, v) in headers {
+            // Header text from a page must not be able to start a new header or request.
+            if k.contains(['\r', '\n', ':']) || v.contains(['\r', '\n']) {
+                return Err(format!("bad header `{}`", k));
+            }
+            if k.eq_ignore_ascii_case("host") || k.eq_ignore_ascii_case("content-length") {
+                continue;
+            }
+            head.push_str(&format!("{}: {}\r\n", k, v));
+        }
+        if !body.is_empty() || matches!(method, "POST" | "PUT" | "PATCH") {
+            head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        }
         let (host, port) = match url.authority().rsplit_once(':') {
             Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty() => (
                 h.to_string(),
@@ -321,27 +421,19 @@ impl DefaultLoader {
             .map_err(|e| format!("cannot connect to {}: {}", url.authority(), e))?;
         stream.set_read_timeout(Some(self.timeout)).ok();
         stream.set_write_timeout(Some(self.timeout)).ok();
-        let mut target = url.path().to_string();
-        if let Some(q) = url.query() {
-            target.push('?');
-            target.push_str(q);
-        }
-        let req = format!(
-            "GET {} HTTP/1.0\r\nHost: {}\r\nUser-Agent: brewster\r\nAccept: text/plain, */*\r\nConnection: close\r\n\r\n",
-            target,
-            url.authority()
-        );
+        head.push_str("\r\n");
         stream
-            .write_all(req.as_bytes())
+            .write_all(head.as_bytes())
+            .and_then(|_| stream.write_all(body))
             .map_err(|e| e.to_string())?;
         let mut raw = Vec::new();
         stream
             .take(MAX_BODY as u64 + 65536)
             .read_to_end(&mut raw)
             .map_err(|e| format!("reading {}: {}", url, e))?;
-        let (status, headers, body) = split_response(&raw)?;
+        let (status, resp_headers, resp_body) = split_response(&raw)?;
         if matches!(status, 301 | 302 | 303 | 307 | 308) {
-            let loc = headers
+            let loc = resp_headers
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("location"))
                 .map(|(_, v)| v.clone())
@@ -350,27 +442,34 @@ impl DefaultLoader {
                 return Err("too many redirects".to_string());
             }
             let next = url.resolve(&loc)?;
-            return match next.scheme() {
-                "http" => self.http_get(&next, redirects + 1),
-                _ => self.load_bytes(&next),
+            if next.scheme() != "http" {
+                // Leaving http: only a page load can follow (a file or about: page).
+                return Ok(HttpResponse {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: self.load_bytes(&next)?,
+                });
+            }
+            return if matches!(status, 307 | 308) {
+                self.exchange(method, &next, headers, body, redirects + 1)
+            } else {
+                self.exchange("GET", &next, headers, &[], redirects + 1)
             };
         }
-        if !(200..300).contains(&status) {
-            return Err(format!("HTTP {} from {}", status, url));
-        }
-        let chunked = headers.iter().any(|(k, v)| {
+        let chunked = resp_headers.iter().any(|(k, v)| {
             k.eq_ignore_ascii_case("transfer-encoding")
                 && v.to_ascii_lowercase().contains("chunked")
         });
-        let body = if chunked {
-            dechunk(body)?
+        let resp_body = if chunked {
+            dechunk(resp_body)?
         } else {
-            body.to_vec()
+            resp_body.to_vec()
         };
-        if body.len() > MAX_BODY {
-            return Err("page is larger than 8 MiB".to_string());
-        }
-        Ok(body)
+        Ok(HttpResponse {
+            status,
+            headers: resp_headers,
+            body: resp_body,
+        })
     }
 }
 
@@ -624,5 +723,114 @@ mod tests {
         assert!(dechunk(b"zz\r\nabc").is_err());
         assert!(dechunk(b"5\r\nab").is_err());
         assert_eq!(dechunk(b"0\r\n\r\n").unwrap(), Vec::<u8>::new());
+    }
+
+    /// A server that reads one full request (head and body) and answers with `response`.
+    fn serve_full(response: Vec<u8>) -> (u16, thread::JoinHandle<(String, Vec<String>, Vec<u8>)>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let h = thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut br = BufReader::new(s.try_clone().unwrap());
+            let mut line = String::new();
+            br.read_line(&mut line).unwrap();
+            let mut headers = Vec::new();
+            let mut len = 0usize;
+            loop {
+                let mut l = String::new();
+                br.read_line(&mut l).unwrap();
+                let l = l.trim().to_string();
+                if l.is_empty() {
+                    break;
+                }
+                if let Some(v) = l.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+                headers.push(l);
+            }
+            let mut body = vec![0u8; len];
+            br.read_exact(&mut body).unwrap();
+            s.write_all(&response).unwrap();
+            (line.trim().to_string(), headers, body)
+        });
+        (port, h)
+    }
+
+    fn request(method: &str, url: Url, body: &[u8]) -> HttpRequest {
+        HttpRequest {
+            method: method.to_string(),
+            url,
+            headers: vec![("Content-Type".into(), "application/x-www-form-urlencoded".into())],
+            body: body.to_vec(),
+        }
+    }
+
+    #[test]
+    fn fetch_posts_a_body_and_returns_any_status() {
+        let (port, h) = serve_full(b"HTTP/1.0 401 Unauthorized\r\nX-A: b\r\n\r\nno".to_vec());
+        let url = u(&format!("http://127.0.0.1:{}/login", port));
+        let r = DefaultLoader::default()
+            .fetch(&request("POST", url, b"user=a&pw=b"))
+            .unwrap();
+        // A 401 is a response, not an error: the page decides what it means.
+        assert_eq!(r.status, 401);
+        assert_eq!(r.body, b"no");
+        assert!(r.headers.iter().any(|(k, v)| k == "X-A" && v == "b"));
+        let (line, headers, body) = h.join().unwrap();
+        assert_eq!(line, "POST /login HTTP/1.0");
+        assert_eq!(body, b"user=a&pw=b");
+        assert!(headers.iter().any(|h| h.eq_ignore_ascii_case("content-length: 11")));
+        assert!(headers.iter().any(|h| h == "Content-Type: application/x-www-form-urlencoded"));
+    }
+
+    #[test]
+    fn a_see_other_redirect_becomes_a_get_without_the_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let h = thread::spawn(move || {
+            let mut lines = Vec::new();
+            for resp in [
+                "HTTP/1.0 303 See Other\r\nLocation: /done\r\n\r\n",
+                "HTTP/1.0 200 OK\r\n\r\nok",
+            ] {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut br = BufReader::new(s.try_clone().unwrap());
+                let mut first = String::new();
+                br.read_line(&mut first).unwrap();
+                let mut len = 0;
+                loop {
+                    let mut l = String::new();
+                    br.read_line(&mut l).unwrap();
+                    if l.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(v) = l.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap();
+                    }
+                }
+                let mut b = vec![0; len];
+                br.read_exact(&mut b).unwrap();
+                lines.push((first.trim().to_string(), b.len()));
+                s.write_all(resp.as_bytes()).unwrap();
+            }
+            lines
+        });
+        let url = u(&format!("http://127.0.0.1:{}/form", port));
+        let r = DefaultLoader::default().fetch(&request("POST", url, b"x=1")).unwrap();
+        assert_eq!((r.status, r.body.as_slice()), (200, &b"ok"[..]));
+        assert_eq!(
+            h.join().unwrap(),
+            vec![("POST /form HTTP/1.0".to_string(), 3), ("GET /done HTTP/1.0".to_string(), 0)]
+        );
+    }
+
+    #[test]
+    fn a_page_cannot_inject_headers_or_use_other_schemes() {
+        let l = DefaultLoader::default();
+        let mut req = request("POST", u("http://127.0.0.1:1/x"), b"");
+        req.headers = vec![("X-A".into(), "b\r\nX-Evil: 1".into())];
+        assert!(l.fetch(&req).unwrap_err().contains("bad header"));
+        assert!(l.fetch(&request("POST", u("https://a.b/"), b"")).unwrap_err().contains("TLS"));
+        assert!(l.fetch(&request("POST", u("file:///tmp/x"), b"")).is_err());
     }
 }

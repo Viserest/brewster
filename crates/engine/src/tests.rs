@@ -1,6 +1,7 @@
 use super::*;
 
 use cre::*;
+use location::Url;
 
 fn lay(doc: &Document, width: usize, form: &Form) -> Page {
     doc.layout(width, form, LayoutOptions::default()).unwrap()
@@ -244,4 +245,53 @@ fn installed_plugins_run_after_the_page_and_failures_are_diagnostics() {
     assert!(plug > body, "{:?}", text);
     assert_eq!(doc.diagnostics().len(), 2, "{:?}", doc.diagnostics());
     assert!(doc.diagnostics().iter().all(|d| d.starts_with("plugin ")));
+}
+
+mod net {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Server(RefCell<Vec<(String, String, Vec<u8>)>>);
+
+    impl Loader for Server {
+        fn load(&self, _: &Url) -> Result<String, String> {
+            Err("no pages here".into())
+        }
+        fn fetch(&self, r: &location::HttpRequest) -> Result<location::HttpResponse, String> {
+            self.0.borrow_mut().push((r.method.clone(), r.url.to_string(), r.body.clone()));
+            Ok(location::HttpResponse { status: 201, headers: vec![], body: b"made".to_vec() })
+        }
+    }
+
+    fn req(url: &str) -> cre::NetRequest {
+        cre::NetRequest { id: 1, method: cre::Method::Post, url: url.into(), headers: vec![], body: b"a=1".to_vec() }
+    }
+
+    #[test]
+    fn requests_are_resolved_against_the_page_and_sent_by_the_loader() {
+        let server = Rc::new(Server(RefCell::new(vec![])));
+        let net = LoaderNet::new(Url::parse("http://site/app/page").unwrap(), server.clone());
+        let r = net.fetch(&req("/login")).unwrap();
+        assert_eq!((r.status, r.body.as_slice()), (201, &b"made"[..]));
+        assert_eq!(server.0.borrow()[0], ("POST".into(), "http://site/login".into(), b"a=1".to_vec()));
+    }
+
+    #[test]
+    fn another_origin_is_blocked_before_anything_is_sent() {
+        let server = Rc::new(Server(RefCell::new(vec![])));
+        let net = LoaderNet::new(Url::parse("http://site/").unwrap(), server.clone());
+        for u in ["http://elsewhere/x", "https://site/x", "http://site:81/x"] {
+            assert!(matches!(net.fetch(&req(u)), Err(cre::NetworkError::Blocked(_))), "{u}");
+        }
+        assert!(server.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_document_follows_the_tabs_address() {
+        let mut d = Document::from_page(Url::parse("http://site/a").unwrap(), || {
+            p!({ id: "u" }, root().url().href)
+        });
+        d.set_url(Url::parse("http://site/b#x").unwrap()).unwrap();
+        assert_eq!(d.url().to_string(), "http://site/b#x");
+    }
 }

@@ -17,6 +17,9 @@ pub struct Metrics {
     pub cell_h: f32,
     /// Physical pixels per point.
     pub ppp: f32,
+    /// Where a glyph starts below the top of its cell: extra line spacing is split above
+    /// and below the text, so text sits in the middle of a shape that fills the cell.
+    pub text_dy: f32,
 }
 
 fn sane_ppp(ppp: f32) -> f32 {
@@ -54,6 +57,19 @@ impl Metrics {
             cell_w: w / ppp,
             cell_h: h / ppp,
             ppp,
+            text_dy: 0.0,
+        }
+    }
+
+    /// Like [`Metrics::measured`] with the line `spacing` times as high (1.0 is none); the
+    /// glyphs are centered in the taller cell.
+    pub fn spaced(advance: f32, line_h: f32, spacing: f32, ppp: f32) -> Metrics {
+        let plain = Metrics::measured(advance, line_h, ppp);
+        let spacing = if spacing.is_finite() { spacing.max(1.0) } else { 1.0 };
+        let tall = Metrics::measured(advance, line_h * spacing, ppp);
+        Metrics {
+            text_dy: snap((tall.cell_h - plain.cell_h) / 2.0, ppp),
+            ..tall
         }
     }
 
@@ -140,7 +156,17 @@ mod tests {
         cell_w: 8.0,
         cell_h: 16.0,
         ppp: 1.0,
+        text_dy: 0.0,
     };
+
+    #[test]
+    fn spaced_lines_center_the_text() {
+        let m = Metrics::spaced(8.0, 20.0, 1.5, 1.0);
+        assert_eq!((m.cell_w, m.cell_h, m.text_dy), (8.0, 30.0, 5.0));
+        // No spacing, or nonsense, is the plain cell.
+        assert_eq!(Metrics::spaced(8.0, 20.0, 1.0, 1.0), Metrics::measured(8.0, 20.0, 1.0));
+        assert_eq!(Metrics::spaced(8.0, 20.0, f32::NAN, 1.0).text_dy, 0.0);
+    }
 
     #[test]
     fn measured_metrics_are_whole_pixels() {

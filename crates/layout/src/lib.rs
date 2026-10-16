@@ -9,10 +9,13 @@
 
 use std::collections::HashMap;
 
-use style::{Align, Dim, Size, border, decode, first, parse_align, parse_color, size, spacing};
+use style::{
+    Align, Dim, Size, border, border_fading, border_radius, decode, first, parse_align,
+    parse_color, size, spacing,
+};
 use tree::Element;
 
-pub use style::Rgb;
+pub use style::{Fade, Rgb};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Span {
@@ -125,6 +128,72 @@ pub struct Page {
     pub rows: Vec<Row>,
     /// Indexed by input index.
     pub inputs: Vec<InputLayout>,
+    /// Shapes to draw behind the text, in page coordinates, back to front. Only produced
+    /// when [`LayoutOptions::graphical`] is set.
+    pub decos: Vec<Deco>,
+}
+
+/// What a [`Deco`] is for; frontends may style kinds differently (a focus ring, say).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecoKind {
+    /// A box with a border or a rounded background.
+    Box,
+    Button,
+    Link,
+    Input,
+}
+
+/// A rectangle drawn behind the text of a page by a graphical frontend: a rounded
+/// background, a border, or both. Units are cells; `inset` moves the edges in by a part of
+/// a cell, and the radius is in points.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Deco {
+    pub col: usize,
+    pub row: usize,
+    pub cols: usize,
+    pub rows: usize,
+    /// Fractions of a cell the left/right and top/bottom edges are moved in.
+    pub inset: (f32, f32),
+    pub fill: Option<Rgb>,
+    pub stroke: Option<Rgb>,
+    /// Which sides of the stroke are drawn: top, right, bottom, left.
+    pub sides: [bool; 4],
+    pub radius: f32,
+    pub fade: Fade,
+    pub kind: DecoKind,
+    /// The focus id of the link / button / input this belongs to (`LineInfo::focus`).
+    pub focus: Option<usize>,
+}
+
+/// How buttons, links and inputs look in a graphical frontend: they are similar rounded
+/// shapes, each with its own fill.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlStyle {
+    pub fg: Option<Rgb>,
+    pub fill: Option<Rgb>,
+    pub stroke: Option<Rgb>,
+    /// Corner radius in points ([`style::FULL_RADIUS`] for a pill).
+    pub radius: f32,
+    pub fade: Fade,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Controls {
+    pub button: ControlStyle,
+    pub link: ControlStyle,
+    pub input: ControlStyle,
+    /// The color of an input's name while it is empty.
+    pub placeholder: Rgb,
+}
+
+impl Controls {
+    fn of(&self, kind: DecoKind) -> ControlStyle {
+        match kind {
+            DecoKind::Button => self.button,
+            DecoKind::Link => self.link,
+            _ => self.input,
+        }
+    }
 }
 
 /// How a page is fitted to the screen.
@@ -137,6 +206,10 @@ pub struct LayoutOptions {
     /// Draw header font sizes by scaling (GUI). Without it headers differ in boldness,
     /// underline and case only.
     pub scale_headers: bool,
+    /// Draw for a window instead of a terminal: borders and rounded backgrounds become
+    /// [`Deco`] shapes (the border cells stay as gutters), and buttons, links and inputs
+    /// become padded shapes with the given look, without brackets.
+    pub graphical: Option<Controls>,
 }
 
 /// Lays out one element into rows that are `width` cells wide.
@@ -170,6 +243,7 @@ pub fn layout_all_with(
         inputs: vec![InputLayout::default(); ids.input],
     };
     let mut rows: Vec<Row> = Vec::new();
+    let mut decos: Vec<Deco> = Vec::new();
     for it in &items {
         let remaining = opts.viewport_rows.map(|v| v.saturating_sub(rows.len()));
         let mut blk = place(it, width, None, &mut st);
@@ -181,6 +255,7 @@ pub fn layout_all_with(
         }
         let gap = width.saturating_sub(blk.w);
         let left = offset(it.ax, gap);
+        decos.extend(shifted(blk.decos, left, rows.len()));
         for r in blk.rows {
             rows.push(pad_row(r, left, gap - left, None));
         }
@@ -188,6 +263,7 @@ pub fn layout_all_with(
     Ok(Page {
         rows,
         inputs: st.inputs,
+        decos,
     })
 }
 
@@ -232,6 +308,62 @@ struct Item {
     /// Natural content width: the widest the content is when nothing wraps.
     nat: usize,
     body: Body,
+    /// The background of this element's own cells (border, padding, text). It is the
+    /// parent's where a shape fills the box instead.
+    frame_bg: Option<Rgb>,
+    /// Rounded corners (a terminal draws `╭╮╰╯`).
+    round: bool,
+    gfx: Option<Gfx>,
+}
+
+/// The shape a graphical frontend draws for an element.
+struct Gfx {
+    kind: DecoKind,
+    fill: Option<Rgb>,
+    stroke: Option<Rgb>,
+    sides: [bool; 4],
+    /// The border cells are gutters the stroke runs through (as opposed to a stroke on the
+    /// edge of the shape).
+    gutter: bool,
+    radius: f32,
+    fade: Fade,
+    focus: Option<usize>,
+}
+
+impl Gfx {
+    fn deco(&self, col: usize, row: usize, cols: usize, rows: usize) -> Deco {
+        let (ix, iy) = if self.gutter {
+            // Run the stroke through the middle of the gutter, on the sides that have one.
+            (0.5, 0.5)
+        } else if self.kind == DecoKind::Box {
+            (0.0, 0.0)
+        } else {
+            // Stacked controls do not touch.
+            (0.0, 0.1)
+        };
+        Deco {
+            col,
+            row,
+            cols,
+            rows,
+            inset: (ix, iy),
+            fill: self.fill,
+            stroke: self.stroke,
+            sides: self.sides,
+            radius: self.radius,
+            fade: self.fade,
+            kind: self.kind,
+            focus: self.focus,
+        }
+    }
+}
+
+fn shifted(mut decos: Vec<Deco>, dx: usize, dy: usize) -> Vec<Deco> {
+    for d in &mut decos {
+        d.col += dx;
+        d.row += dy;
+    }
+    decos
 }
 
 enum Body {
@@ -267,6 +399,8 @@ struct InputBody {
     /// Caret as a char index into `value`, while this input is being edited.
     caret: Option<usize>,
     fg: Option<Rgb>,
+    /// Drawn for a window: no `name: [ ]`, the name shows while the value is empty.
+    graphical: Option<Rgb>,
 }
 
 /// Per-row attributes shared by all rows of a leaf.
@@ -341,6 +475,17 @@ impl TextBody {
 impl InputBody {
     /// Displayed chars and the length of the `name: [` prefix. The closing `]` is last.
     fn displayed(&self) -> (Vec<char>, usize) {
+        if self.graphical.is_some() {
+            // Just the value, and a blank cell for the caret to rest on after it.
+            let mark = if self.protected { '\u{2022}' } else { ' ' };
+            let mut d: Vec<char> = if self.protected {
+                std::iter::repeat(mark).take(self.value.chars().count()).collect()
+            } else {
+                self.value.chars().collect()
+            };
+            d.push(' ');
+            return (d, 0);
+        }
         let mut d: Vec<char> = format!("{}: [", self.name).chars().collect();
         let prefix = d.len();
         if self.protected {
@@ -352,10 +497,15 @@ impl InputBody {
         (d, prefix)
     }
 
+    /// The name stands in for an empty value that is not being edited.
+    fn placeholder(&self) -> bool {
+        self.graphical.is_some() && self.value.is_empty() && self.caret.is_none()
+    }
+
     fn look(&self) -> Look {
         Look {
             kind: Kind::Input,
-            fg: self.fg,
+            fg: if self.placeholder() { self.graphical } else { self.fg },
             bold: false,
             underline: false,
             verbatim: false,
@@ -409,6 +559,20 @@ fn build(
     let pad = spacing(st, "pad")?;
     let bord = border(st)?;
     let sz = size(st)?;
+    let radius = border_radius(st)?;
+    let fade = border_fading(st)?;
+    let control = match (opts.graphical, r.tag.as_str()) {
+        (Some(c), "button") => Some((DecoKind::Button, c.of(DecoKind::Button))),
+        (Some(c), "link") => Some((DecoKind::Link, c.of(DecoKind::Link))),
+        (Some(c), "input") => Some((DecoKind::Input, c.of(DecoKind::Input))),
+        _ => None,
+    };
+    let mut pad = pad;
+    if control.is_some()
+        && !["pad", "pad-x", "pad-y"].iter().any(|k| st.contains_key(*k))
+    {
+        pad = [0, 1, 0, 1];
+    }
 
     let fg = match st.get("fcolor") {
         Some(v) => Some(parse_color(first(v)?)?),
@@ -426,6 +590,56 @@ fn build(
         Some(v) => Some(parse_color(first(v)?)?),
         None => fg,
     };
+    let explicit_bg = st.contains_key("bcolor");
+    let has_border = bord.iter().any(|&b| b > 0);
+    let r_pts = radius.or(control.map(|(_, c)| c.radius)).unwrap_or(0.0);
+
+    // The shape a window draws for this element.
+    let gfx = if opts.graphical.is_some() {
+        match control {
+            Some((kind, c)) => {
+                let fill = if explicit_bg { bg } else { c.fill };
+                let (stroke, sides, gutter) = if has_border {
+                    (border_fg, bord.map(|b| b > 0), true)
+                } else {
+                    let stroke = match st.get("border-color") {
+                        Some(_) => border_fg,
+                        None => c.stroke,
+                    };
+                    (stroke, [true; 4], false)
+                };
+                Some(Gfx {
+                    kind,
+                    fill,
+                    stroke,
+                    sides,
+                    gutter,
+                    radius: r_pts,
+                    fade: if fade == Fade::None { c.fade } else { fade },
+                    focus: None,
+                })
+            }
+            None if has_border || (explicit_bg && r_pts > 0.0) => Some(Gfx {
+                kind: DecoKind::Box,
+                fill: (explicit_bg && r_pts > 0.0).then_some(bg).flatten(),
+                stroke: has_border.then_some(border_fg).flatten(),
+                sides: bord.map(|b| b > 0),
+                gutter: has_border,
+                radius: r_pts,
+                fade,
+                focus: None,
+            }),
+            None => None,
+        }
+    } else {
+        None
+    };
+    // Where a shape fills the box, the element's own cells keep the parent's background.
+    let cell_bg = if gfx.as_ref().is_some_and(|g| g.fill.is_some()) {
+        ctx.bg
+    } else {
+        bg
+    };
 
     let (body, nat) = if r.tag == "box" {
         let child_ctx = Ctx { fg, bg, ax };
@@ -438,20 +652,33 @@ fn build(
         }
         (Body::Box(kids), nat)
     } else {
-        build_leaf(r, fg, ctx, ids, form, opts)?
+        build_leaf(r, fg, ctx, ids, form, opts, control.map(|(_, c)| c))?
     };
 
+    let mut gfx = gfx;
+    if let Some(g) = &mut gfx {
+        g.focus = match &body {
+            Body::Text(t) => t.focus,
+            Body::Input(b) => Some(b.focus),
+            Body::Box(_) => None,
+        };
+    }
+    // A leaf's text sits on its own cells; a box's children sit on the box's background.
+    let is_box = matches!(body, Body::Box(_));
     Ok(Item {
         margin,
         pad,
         border: bord,
         size: sz,
         outer_bg: ctx.bg,
-        bg,
+        bg: if is_box { bg } else { cell_bg },
         border_fg,
         ax,
         nat,
         body,
+        frame_bg: cell_bg,
+        round: r_pts > 0.0,
+        gfx,
     })
 }
 
@@ -462,6 +689,7 @@ fn build_leaf(
     ids: &mut Ids,
     form: &Form,
     opts: LayoutOptions,
+    control: Option<ControlStyle>,
 ) -> Result<(Body, usize), String> {
     let st = &r.style;
     let a0 = r.args.first().cloned().unwrap_or_default();
@@ -473,6 +701,8 @@ fn build_leaf(
             default.or(ctx.fg)
         }
     };
+    // A control in a window has its look's text color.
+    let control_fg = control.and_then(|c| c.fg);
 
     let text = |t: TextBody| {
         let nat = t.natural();
@@ -500,10 +730,10 @@ fn build_leaf(
             let mut t = TextBody::new(
                 Kind::Link,
                 label.clone(),
-                text_fg(Some(Rgb(80, 170, 255))),
+                text_fg(control_fg.or(Some(Rgb(80, 170, 255)))),
                 r.id,
             );
-            t.underline = true;
+            t.underline = control.is_none();
             t.copy = Some(label);
             t.href = Some(decode(&a0));
             t.focus = Some(ids.next_focus());
@@ -515,7 +745,12 @@ fn build_leaf(
             } else {
                 decode(&a0)
             };
-            let mut t = TextBody::new(Kind::Button, format!("[ {} ]", label), text_fg(None), r.id);
+            let shown = if control.is_some() {
+                label.clone()
+            } else {
+                format!("[ {} ]", label)
+            };
+            let mut t = TextBody::new(Kind::Button, shown, text_fg(control_fg), r.id);
             t.bold = true;
             t.copy = Some(label);
             t.focus = Some(ids.next_focus());
@@ -548,9 +783,15 @@ fn build_leaf(
                 protected: st.contains_key("protected"),
                 value,
                 caret,
-                fg: text_fg(None),
+                fg: text_fg(control_fg),
+                graphical: control.map(|_| opts.graphical.map_or(Rgb(128, 128, 128), |c| c.placeholder)),
             };
-            let nat = b.displayed().0.len();
+            let nat = if b.graphical.is_some() {
+                // Room for the value, or for the name when empty, and a sixteen-cell field.
+                (b.value.chars().count() + 1).max(b.name.chars().count() + 1).max(16)
+            } else {
+                b.displayed().0.len()
+            };
             Ok((Body::Input(b), nat))
         }
         t => Err(format!("cannot lay out element `{}`", t)),
@@ -680,10 +921,15 @@ fn input_lines(b: &InputBody, cw: usize) -> (Vec<Line>, InputLayout) {
     let segs = wrap_ranges(&disp, cw);
     let vlen = b.value.chars().count();
     let caret_at = b.caret.map(|c| prefix + c.min(vlen));
+    let placeholder: Vec<char> = if b.placeholder() { b.name.chars().collect() } else { vec![] };
     let lines = segs
         .iter()
         .map(|&(s, e)| {
-            let text: String = disp[s..e].iter().take(cw).collect();
+            let text: String = if placeholder.is_empty() {
+                disp[s..e].iter().take(cw).collect()
+            } else {
+                placeholder.iter().take(cw).collect()
+            };
             let caret = caret_at.and_then(|d| {
                 if d >= s && d < e {
                     Some((d - s).min(cw.saturating_sub(1)))
@@ -716,6 +962,8 @@ struct Block {
     /// Width including margins.
     w: usize,
     rows: Vec<Row>,
+    /// Shapes, relative to the block's top left.
+    decos: Vec<Deco>,
 }
 
 fn space(n: usize, bg: Option<Rgb>) -> Span {
@@ -758,7 +1006,13 @@ fn pad_row(row: Row, left: usize, right: usize, bg: Option<Rgb>) -> Row {
     .shifted(left)
 }
 
+/// A border cell. A window draws its border as a shape, so the cell is a blank gutter.
 fn edge(it: &Item, text: String) -> Span {
+    let text = if it.gfx.as_ref().is_some_and(|g| g.gutter) {
+        " ".repeat(text.chars().count())
+    } else {
+        text
+    };
     Span {
         text,
         fg: it.border_fg,
@@ -779,9 +1033,9 @@ fn frame_row(it: &Item, inner: Row) -> Row {
     if bl > 0 {
         spans.push(edge(it, "\u{2502}".to_string()));
     }
-    push_space(&mut spans, pl, it.bg);
+    push_space(&mut spans, pl, it.frame_bg);
     spans.extend(inner.spans);
-    push_space(&mut spans, pr, it.bg);
+    push_space(&mut spans, pr, it.frame_bg);
     if br > 0 {
         spans.push(edge(it, "\u{2502}".to_string()));
     }
@@ -796,6 +1050,11 @@ fn frame_row(it: &Item, inner: Row) -> Row {
 
 /// Top or bottom border line, with corners only where a side border meets it.
 fn horizontal(it: &Item, cw: usize, left: &str, right: &str) -> Row {
+    let (left, right) = if it.round {
+        (round_corner(left), round_corner(right))
+    } else {
+        (left, right)
+    };
     let [_, mr, _, ml] = it.margin;
     let [_, pr, _, pl] = it.pad;
     let [_, br, _, bl] = it.border;
@@ -815,6 +1074,17 @@ fn horizontal(it: &Item, cw: usize, left: &str, right: &str) -> Row {
         spans,
         info: None,
         cont: false,
+    }
+}
+
+/// The rounded form of a square corner character.
+fn round_corner(c: &str) -> &str {
+    match c {
+        "\u{250C}" => "\u{256D}",
+        "\u{2510}" => "\u{256E}",
+        "\u{2514}" => "\u{2570}",
+        "\u{2518}" => "\u{256F}",
+        o => o,
     }
 }
 
@@ -912,6 +1182,7 @@ fn place(it: &Item, aw: usize, ah: Option<usize>, st: &mut State) -> Block {
     };
 
     let mut inner: Vec<Row> = Vec::new();
+    let mut kid_decos: Vec<Deco> = Vec::new();
     match &it.body {
         Body::Box(kids) => {
             for k in kids {
@@ -919,6 +1190,7 @@ fn place(it: &Item, aw: usize, ah: Option<usize>, st: &mut State) -> Block {
                 let blk = place(k, cw, remaining, st);
                 let gap = cw.saturating_sub(blk.w);
                 let left = offset(k.ax, gap);
+                kid_decos.extend(shifted(blk.decos, left, inner.len()));
                 for r in blk.rows {
                     inner.push(pad_row(r, left, gap - left, it.bg));
                 }
@@ -953,13 +1225,13 @@ fn place(it: &Item, aw: usize, ah: Option<usize>, st: &mut State) -> Block {
         out.push(horizontal(it, cw, "\u{250C}", "\u{2510}"));
     }
     for _ in 0..pt {
-        out.push(frame_row(it, blank(cw, it.bg)));
+        out.push(frame_row(it, blank(cw, it.frame_bg)));
     }
     for r in inner {
         out.push(frame_row(it, r));
     }
     for _ in 0..pb {
-        out.push(frame_row(it, blank(cw, it.bg)));
+        out.push(frame_row(it, blank(cw, it.frame_bg)));
     }
     if bb > 0 {
         out.push(horizontal(it, cw, "\u{2514}", "\u{2518}"));
@@ -967,7 +1239,14 @@ fn place(it: &Item, aw: usize, ah: Option<usize>, st: &mut State) -> Block {
     for _ in 0..mb {
         out.push(blank(w, it.outer_bg));
     }
-    Block { w, rows: out }
+    // The shape of this element goes behind the shapes of what is inside it.
+    let box_rows = out.len() - mt - mb;
+    let mut decos: Vec<Deco> = Vec::new();
+    if let Some(g) = &it.gfx {
+        decos.push(g.deco(ml, mt, bw, box_rows));
+    }
+    decos.extend(shifted(kid_decos, ml + it.border[3] + it.pad[3], mt + bt + pt));
+    Block { w, rows: out, decos }
 }
 
 #[cfg(test)]

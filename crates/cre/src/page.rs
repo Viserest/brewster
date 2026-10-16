@@ -3,7 +3,32 @@
 
 use std::cell::RefCell;
 
-use crate::{Element, Root, element::handler_of, element::take_problems};
+use crate::{
+    Element, NetRequest, NetResult, Root, Url, element::handler_of, element::take_problems,
+};
+
+/// Marks a page function `fn() -> Element`.
+pub struct NoRoot;
+/// Marks a page function `fn(&Root) -> Element`.
+pub struct WithRoot;
+
+/// What `page!` and `router!` export: a function that builds the page, with or without the
+/// root (so it can read `root.url()` while building).
+pub trait PageFn<M> {
+    fn build(&self, root: &Root) -> Element;
+}
+
+impl<F: Fn() -> Element> PageFn<NoRoot> for F {
+    fn build(&self, _: &Root) -> Element {
+        self()
+    }
+}
+
+impl<F: Fn(&Root) -> Element> PageFn<WithRoot> for F {
+    fn build(&self, root: &Root) -> Element {
+        self(root)
+    }
+}
 
 pub struct LivePage {
     root: Root,
@@ -15,14 +40,54 @@ pub struct LivePage {
 impl LivePage {
     /// Builds the page by calling `build`; its element becomes the page.
     pub fn new(build: impl FnOnce() -> Element) -> LivePage {
+        LivePage::at(Url::default(), |_| build())
+    }
+
+    /// Builds the page at `url`: `build` is given the root, so it can read the address.
+    pub fn at(url: Url, build: impl FnOnce(&Root) -> Element) -> LivePage {
         let root = Root::new();
+        root.set_url(url);
+        let entered = root.enter();
         take_problems(); // not ours
-        let e = build();
+        let e = build(&root);
         root.tree.append(&e);
+        drop(entered);
+        // Something spawned while building may already be able to run.
+        crate::task::run(&root);
         LivePage {
             root,
             problems: RefCell::new(take_problems()),
         }
+    }
+
+    /// The tab's address changed.
+    pub fn set_url(&self, url: Url) {
+        self.root.set_url(url);
+    }
+
+    /// The user edited the input with this id: the page sees the new value. `false` when
+    /// there is no such input.
+    pub fn set_input(&self, id: usize, value: &str) -> bool {
+        match self.root.tree.find(id) {
+            Some(e) if e.tag() == "input" => {
+                e.set_text(value);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The network requests the page has queued since the last call.
+    pub fn net_take(&self) -> Vec<NetRequest> {
+        self.root.net().take()
+    }
+
+    /// The answer to a request. Futures waiting for it run before this returns.
+    pub fn net_done(&self, id: u32, result: NetResult) {
+        let _entered = self.root.enter();
+        self.root.net().complete(id, result);
+        crate::task::run(&self.root);
+        self.problems.borrow_mut().extend(take_problems());
     }
 
     pub fn root(&self) -> &Root {
@@ -49,7 +114,12 @@ impl LivePage {
             return false;
         };
         take_problems();
-        (h.0)(&el, &self.root);
+        {
+            let _entered = self.root.enter();
+            (h.0)(&el, &self.root);
+        }
+        // A handler may have started something that can already make progress.
+        crate::task::run(&self.root);
         self.problems.borrow_mut().extend(take_problems());
         true
     }

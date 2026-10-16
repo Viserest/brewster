@@ -94,6 +94,12 @@ pub const OPTIONS: &[OptionDef] = &[
         desc: "reopen the tabs of the last session when no address is given on the command line",
     },
     OptionDef {
+        key: "general.theme",
+        kind: K::Choice(&["default", "chromium", "firefox", "tui"]),
+        default: D::Text("default"),
+        desc: "how the browser looks: default (dark and round), chromium, firefox or tui (the plain terminal look); windows draw shapes, terminals only the colors",
+    },
+    OptionDef {
         key: "view.cursor_mode",
         kind: K::Choice(&["focused", "all"]),
         default: D::Text("focused"),

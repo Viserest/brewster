@@ -15,12 +15,55 @@ pub use cursor::{
 };
 pub use host::{Guest, Host, MapRunner, Runner};
 pub use layout::{
-    Form, InputLayout, Kind, LayoutOptions, LineInfo, Page, Rgb, Row, Span, row_text,
+    ControlStyle, Controls, Deco, DecoKind, Fade, Form, InputLayout, Kind, LayoutOptions, LineInfo,
+    Page, Rgb, Row, Span, row_text,
 };
 pub use location::{DefaultLoader, Loader, Url};
 pub use plugin::Registry;
 
-use host::{NativeGuest, Session};
+use host::{NativeGuest, NetClient, Session};
+
+/// Carries out the requests a page makes: they are resolved against the page's address,
+/// may only go to the page's own origin, and are sent by the loader.
+pub struct LoaderNet {
+    base: Url,
+    loader: Rc<dyn Loader>,
+}
+
+impl LoaderNet {
+    pub fn new(base: Url, loader: Rc<dyn Loader>) -> LoaderNet {
+        LoaderNet { base, loader }
+    }
+}
+
+impl NetClient for LoaderNet {
+    fn fetch(&self, req: &cre::NetRequest) -> cre::NetResult {
+        let url = self
+            .base
+            .resolve(&req.url)
+            .map_err(|e| cre::NetworkError::Failed(format!("{}: {}", req.url, e)))?;
+        if url.scheme() != self.base.scheme() || url.authority() != self.base.authority() {
+            return Err(cre::NetworkError::Blocked(format!(
+                "{} is not on the page's origin",
+                url
+            )));
+        }
+        let sent = location::HttpRequest {
+            method: req.method.as_str().to_string(),
+            url,
+            headers: req.headers.clone(),
+            body: req.body.clone(),
+        };
+        match self.loader.fetch(&sent) {
+            Ok(r) => Ok(cre::Response {
+                status: r.status,
+                headers: r.headers,
+                body: r.body,
+            }),
+            Err(e) => Err(cre::NetworkError::Failed(e)),
+        }
+    }
+}
 
 /// A loaded page: the elements its module built (and its plugins' elements after them),
 /// plus the means to run their click handlers.
@@ -32,17 +75,32 @@ pub struct Document {
 impl Document {
     /// A page built in this process: the browser's own pages and tests. It runs no
     /// plugins.
-    pub fn from_page(url: Url, build: impl FnOnce() -> cre::Element) -> Document {
-        Document::from_guest(url, Box::new(NativeGuest::new(build)))
+    pub fn from_page(url: Url, build: impl FnOnce() -> cre::Element + 'static) -> Document {
+        let guest = NativeGuest::at(host::page_url(&url), |_| build());
+        Document::from_guest(url, Box::new(guest))
             .expect("a page that runs in this process cannot fail")
     }
 
     /// A page run by any [`Guest`], without plugins.
     pub fn from_guest(url: Url, guest: Box<dyn Guest>) -> Result<Document, String> {
         let mut session = Session::new();
+        session.set_url(host::page_url(&url));
         session.set_page(guest);
         session.refresh()?;
         Ok(Document { url, session })
+    }
+
+    /// The tab moved without loading another page (a `#fragment`, say): the pages are told
+    /// the new address, so `root().url()` follows it, and may change in response.
+    pub fn set_url(&mut self, url: Url) -> Result<(), String> {
+        self.session.set_url(host::page_url(&url));
+        self.url = url;
+        self.session.refresh()
+    }
+
+    /// The user edited the input whose element has tree id `node`.
+    pub fn set_input(&mut self, node: usize, value: &str) {
+        self.session.set_input(node, value);
     }
 
     /// `about:blank`.
@@ -75,6 +133,8 @@ impl Document {
         let module = plugin::module_from_bytes(bytes, &url, &*loader, &host.compiler)
             .map_err(|e| e.to_string())?;
         let mut session = Session::new();
+        session.set_net(Rc::new(LoaderNet::new(url.clone(), loader.clone())));
+        session.set_url(host::page_url(&url));
         session.set_page(host.runner.instantiate(&module)?);
 
         // The plugins to run are fixed before the page runs. The registry is not borrowed
@@ -158,7 +218,7 @@ pub fn render_url(
 
 /// Renders a page built in this process (see [`Document::from_page`]).
 pub fn render_page(
-    build: impl FnOnce() -> cre::Element,
+    build: impl FnOnce() -> cre::Element + 'static,
     width: usize,
 ) -> Result<Vec<Row>, String> {
     Ok(Document::from_page(Url::about("blank"), build)

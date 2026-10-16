@@ -172,6 +172,107 @@ impl Border {
     }
 }
 
+// ── Radius and Fade ─────────────────────────────────────────────────
+
+/// How round the corners of a box are. A terminal draws `Radius::None` as square corners
+/// and anything else as rounded ones; a window draws the real radius.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Radius {
+    None,
+    Sm,
+    Md,
+    Lg,
+    Xl,
+    /// Fully rounded ends (a pill).
+    Full,
+    /// A size in points.
+    Px(u16),
+    Invalid(String),
+}
+
+impl From<&str> for Radius {
+    fn from(s: &str) -> Radius {
+        let t = s.trim();
+        match t {
+            "none" => Radius::None,
+            "sm" => Radius::Sm,
+            "md" => Radius::Md,
+            "lg" => Radius::Lg,
+            "xl" => Radius::Xl,
+            "full" | "pill" => Radius::Full,
+            _ => match t.strip_suffix("px").unwrap_or(t).parse::<u16>() {
+                Ok(0) => Radius::None,
+                Ok(n) if n <= 999 => Radius::Px(n),
+                _ => Radius::Invalid(s.to_string()),
+            },
+        }
+    }
+}
+
+impl Radius {
+    pub fn is_valid(&self) -> bool {
+        !matches!(self, Radius::Invalid(_))
+    }
+
+    pub fn value(&self) -> String {
+        match self {
+            Radius::None => "none".into(),
+            Radius::Sm => "sm".into(),
+            Radius::Md => "md".into(),
+            Radius::Lg => "lg".into(),
+            Radius::Xl => "xl".into(),
+            Radius::Full => "full".into(),
+            Radius::Px(n) => n.to_string(),
+            Radius::Invalid(s) => s.clone(),
+        }
+    }
+}
+
+/// Which side a border is strongest on; it fades away toward the opposite side.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fade {
+    None,
+    Top,
+    Right,
+    Bottom,
+    Left,
+    /// The whole border, softened.
+    Soft,
+    Invalid(String),
+}
+
+impl From<&str> for Fade {
+    fn from(s: &str) -> Fade {
+        match s.trim() {
+            "none" | "0" | "off" => Fade::None,
+            "top" => Fade::Top,
+            "right" => Fade::Right,
+            "bottom" => Fade::Bottom,
+            "left" => Fade::Left,
+            "soft" | "all" => Fade::Soft,
+            _ => Fade::Invalid(s.to_string()),
+        }
+    }
+}
+
+impl Fade {
+    pub fn is_valid(&self) -> bool {
+        !matches!(self, Fade::Invalid(_))
+    }
+
+    pub fn value(&self) -> String {
+        match self {
+            Fade::None => "none".into(),
+            Fade::Top => "top".into(),
+            Fade::Right => "right".into(),
+            Fade::Bottom => "bottom".into(),
+            Fade::Left => "left".into(),
+            Fade::Soft => "soft".into(),
+            Fade::Invalid(s) => s.clone(),
+        }
+    }
+}
+
 // ── String conversions ──────────────────────────────────────────────
 
 macro_rules! from_text {
@@ -180,7 +281,7 @@ macro_rules! from_text {
         impl From<&String> for $t { fn from(s: &String) -> $t { <$t>::from(s.as_str()) } }
     )*};
 }
-from_text!(Color, Pad, Border, InputType);
+from_text!(Color, Pad, Border, InputType, Radius, Fade);
 
 // ── InputType ───────────────────────────────────────────────────────
 
@@ -235,6 +336,12 @@ pub enum Attr {
     margin_x(String),
     margin_y(String),
     border(Border),
+    /// Rounded corners (`"md"`, `"full"`, `"12"` ...). Windows draw them; a terminal draws
+    /// rounded corner characters on bordered boxes.
+    border_radius(Radius),
+    /// The side a border is strongest on (`"bottom"`): it fades out toward the other.
+    /// Windows only.
+    border_fading(Fade),
     size(String),
     size_x(String),
     size_y(String),
@@ -271,6 +378,8 @@ impl Attr {
             Attr::margin_x(_) => "margin-x",
             Attr::margin_y(_) => "margin-y",
             Attr::border(_) => "border",
+            Attr::border_radius(_) => "border-radius",
+            Attr::border_fading(_) => "border-fading",
             Attr::size(_) => "size",
             Attr::size_x(_) => "size-x",
             Attr::size_y(_) => "size-y",
@@ -292,6 +401,8 @@ impl Attr {
             Attr::bcolor(c) | Attr::fcolor(c) | Attr::border_color(c) => vec![c.value()],
             Attr::pad(p) | Attr::margin(p) => p.values(),
             Attr::border(b) => b.values(),
+            Attr::border_radius(r) => vec![r.value()],
+            Attr::border_fading(f) => vec![f.value()],
             Attr::pad_x(s)
             | Attr::pad_y(s)
             | Attr::margin_x(s)
@@ -341,6 +452,20 @@ mod tests {
         assert_eq!(Border::from("1,0"), Border::Xy(true, false));
         assert_eq!(Border::from("1,0,0,1").values(), ["1", "0", "0", "1"]);
         assert!(!Border::from("2").is_valid());
+    }
+
+    #[test]
+    fn radius_and_fade_parse_from_strings() {
+        assert_eq!(Radius::from("md"), Radius::Md);
+        assert_eq!(Radius::from("pill"), Radius::Full);
+        assert_eq!(Radius::from("12px"), Radius::Px(12));
+        assert_eq!(Radius::from("0"), Radius::None);
+        assert!(!Radius::from("round").is_valid());
+        assert_eq!(Radius::from("12px").value(), "12");
+        assert_eq!(Fade::from("bottom"), Fade::Bottom);
+        assert!(!Fade::from("diagonal").is_valid());
+        assert_eq!(Attr::border_radius("lg".into()).key(), "border-radius");
+        assert_eq!(Attr::border_fading("top".into()).values(), Some(vec!["top".to_string()]));
     }
 
     #[test]
